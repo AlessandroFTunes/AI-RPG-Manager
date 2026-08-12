@@ -13,9 +13,25 @@ export const rpgCommand = new SlashCommandBuilder()
       .addStringOption((option) =>
         option
           .setName("sistema")
-          .setDescription("Sistema, gênero ou tom da campanha")
+          .setDescription("Gênero, cenário ou tom da campanha")
           .setRequired(false),
+      )
+      .addStringOption((option) =>
+        option
+          .setName("regras")
+          .setDescription("Conjunto de regras usado pela campanha")
+          .setRequired(false)
+          .addChoices(
+            { name: "Narrativo", value: "narrative" },
+            { name: "D&D 5e 2014 (SRD 5.1)", value: "dnd5e-2014" },
+            { name: "D&D 5e 2024 (SRD 5.2)", value: "dnd5e-2024" },
+          ),
       ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("comecar")
+      .setDescription("Encerra a sessão zero e começa a aventura"),
   )
   .addSubcommand((subcommand) =>
     subcommand.setName("estado").setDescription("Mostra o estado resumido da campanha atual"),

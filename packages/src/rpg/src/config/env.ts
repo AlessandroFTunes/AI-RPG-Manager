@@ -23,6 +23,17 @@ const envSchema = z
     NVIDIA_MODEL: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
     OPENAI_MODEL: z.string().default("gpt-4.1-mini"),
+    OPENROUTER_API_KEY: z.string().optional(),
+    OPENROUTER_MODEL: z.string().default("openrouter/free"),
+
+    TTS_PROVIDER: z.enum(["piper", "elevenlabs", "openai"]).default("piper"),
+    PIPER_HOST: z.string().default("100.70.59.77"),
+    PIPER_PORT: z.coerce.number().int().positive().default(10200),
+    PIPER_VOICE: z.string().default("pt_BR-cadu-medium"),
+    ELEVENLABS_API_KEY: z.string().optional(),
+    ELEVENLABS_VOICE_ID: z.string().optional(),
+    OPENAI_TTS_MODEL: z.string().default("gpt-4o-mini-tts"),
+    OPENAI_TTS_VOICE: z.string().default("onyx"),
   })
   .superRefine((value, ctx) => {
     if (value.AI_PROVIDER === "nvidia") {

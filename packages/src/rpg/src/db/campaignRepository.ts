@@ -2,12 +2,38 @@ import { sql } from "../config/database";
 
 export type CampaignStatus = "active" | "closed";
 export type CampaignMessageRole = "user" | "assistant" | "system" | "tool";
+export type CampaignPhase = "setup" | "playing";
+export type CampaignRuleset = "narrative" | "dnd5e-2014" | "dnd5e-2024";
+export type SpeechProviderName = "piper" | "elevenlabs" | "openai";
+export type VoiceProfile = "narrator" | "deep" | "high" | "elder" | "young" | "dark" | "energetic";
+
+export type VoiceCastMember = {
+  npcId: string;
+  name: string;
+  profile: Exclude<VoiceProfile, "narrator">;
+  appearances: number;
+  importance: "supporting" | "main";
+};
+
+export type CampaignVoice = {
+  enabled: boolean;
+  channelId: string | null;
+  provider: SpeechProviderName;
+};
 
 export type CampaignCharacter = {
   id: string;
+  playerId?: string;
+  playerName?: string;
   name: string;
   description?: string;
   status?: string;
+};
+
+export type CampaignSetup = {
+  premise: string;
+  tone: string;
+  boundaries: string[];
 };
 
 export type CampaignNpc = CampaignCharacter & {
@@ -37,6 +63,11 @@ export type CampaignInventoryItem = {
 
 export type CampaignState = {
   system: string;
+  ruleset: CampaignRuleset;
+  phase: CampaignPhase;
+  setup: CampaignSetup;
+  voice: CampaignVoice;
+  voiceCast: Record<string, VoiceCastMember>;
   summary: string;
   currentScene: string;
   characters: CampaignCharacter[];
@@ -95,6 +126,8 @@ type CreateCampaignInput = {
   ownerId: string;
   title: string;
   system: string;
+  ruleset: CampaignRuleset;
+  voice?: CampaignVoice;
 };
 
 type SaveMessageInput = {
@@ -122,9 +155,18 @@ function parseJson<T>(value: T | string): T {
 }
 
 function normalizeCampaign(row: Campaign): Campaign {
+  const state = parseJson<CampaignState>(row.state);
+
   return {
     ...row,
-    state: parseJson<CampaignState>(row.state),
+    state: {
+      ...state,
+      ruleset: state.ruleset ?? "narrative",
+      phase: state.phase ?? "playing",
+      setup: state.setup ?? { premise: "", tone: "", boundaries: [] },
+      voice: state.voice ?? { enabled: false, channelId: null, provider: "piper" },
+      voiceCast: state.voiceCast ?? {},
+    },
   };
 }
 
@@ -146,9 +188,22 @@ function toSqlJson(value: unknown) {
   return sql.json(value as never);
 }
 
-export function createInitialCampaignState(system: string): CampaignState {
+export function createInitialCampaignState(
+  system: string,
+  ruleset: CampaignRuleset,
+  voice: CampaignVoice = { enabled: false, channelId: null, provider: "piper" },
+): CampaignState {
   return {
     system,
+    ruleset,
+    phase: "setup",
+    setup: {
+      premise: "",
+      tone: "",
+      boundaries: [],
+    },
+    voice,
+    voiceCast: {},
     summary: "",
     currentScene: "",
     characters: [],
@@ -161,7 +216,7 @@ export function createInitialCampaignState(system: string): CampaignState {
 }
 
 export async function createCampaign(input: CreateCampaignInput) {
-  const state = createInitialCampaignState(input.system);
+  const state = createInitialCampaignState(input.system, input.ruleset, input.voice);
   const rows = await sql<Campaign[]>`
     insert into campaigns (guild_id, channel_id, thread_id, owner_id, title, system, state)
     values (
@@ -205,6 +260,90 @@ export async function getActiveCampaignByThread(threadId: string) {
   return rows[0] ? normalizeCampaign(rows[0]) : null;
 }
 
+export async function getActiveVoiceCampaigns() {
+  const rows = await sql<Campaign[]>`
+    select * from campaigns
+    where status = 'active'
+      and state -> 'voice' ->> 'enabled' = 'true'
+      and state -> 'voice' ->> 'channelId' is not null
+    order by updated_at desc
+  `;
+
+  return rows.map(normalizeCampaign);
+}
+
+export async function getActiveVoiceCampaignByGuild(guildId: string) {
+  const rows = await sql<Campaign[]>`
+    select * from campaigns
+    where guild_id = ${guildId}
+      and status = 'active'
+      and state -> 'voice' ->> 'enabled' = 'true'
+    order by updated_at desc
+    limit 1
+  `;
+
+  return rows[0] ? normalizeCampaign(rows[0]) : null;
+}
+
+const npcVoiceProfiles: VoiceCastMember["profile"][] = [
+  "deep",
+  "high",
+  "elder",
+  "young",
+  "dark",
+  "energetic",
+];
+
+function getNpcVoiceProfile(npcId: string) {
+  let hash = 0;
+  for (const character of npcId) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return npcVoiceProfiles[hash % npcVoiceProfiles.length];
+}
+
+export function updateVoiceCast(
+  currentVoiceCast: Record<string, VoiceCastMember>,
+  npcs: Array<{ npcId: string; name: string }>,
+) {
+  const voiceCast = { ...currentVoiceCast };
+  const uniqueNpcs = [...new Map(npcs.map((npc) => [npc.npcId, npc])).values()];
+  for (const npc of uniqueNpcs) {
+    const existing = voiceCast[npc.npcId];
+    const appearances = (existing?.appearances ?? 0) + 1;
+    voiceCast[npc.npcId] = {
+      npcId: npc.npcId,
+      name: existing?.name ?? npc.name,
+      profile: existing?.profile ?? getNpcVoiceProfile(npc.npcId),
+      appearances,
+      importance: appearances >= 5 ? "main" : "supporting",
+    };
+  }
+  return voiceCast;
+}
+
+export async function registerNpcVoiceAppearances(
+  campaignId: string,
+  npcs: Array<{ npcId: string; name: string }>,
+) {
+  if (npcs.length === 0) return {};
+
+  return sql.begin(async (transaction) => {
+    const rows = await transaction<Campaign[]>`
+      select * from campaigns where id = ${campaignId} for update
+    `;
+    if (!rows[0]) return {};
+
+    const campaign = normalizeCampaign(rows[0]);
+    const voiceCast = updateVoiceCast(campaign.state.voiceCast, npcs);
+
+    await transaction`
+      update campaigns
+      set state = jsonb_set(state, '{voiceCast}', ${toSqlJson(voiceCast)}, true)
+      where id = ${campaignId}
+    `;
+    return voiceCast;
+  });
+}
+
 export async function patchCampaignState(campaignId: string, patch: CampaignStatePatch) {
   const rows = await sql<Campaign[]>`
     update campaigns
@@ -213,6 +352,47 @@ export async function patchCampaignState(campaignId: string, patch: CampaignStat
       coalesce(state -> 'flags', '{}'::jsonb) || coalesce(${toSqlJson(patch.flags ?? {})}, '{}'::jsonb)
     )
     where id = ${campaignId}
+    returning *
+  `;
+
+  return rows[0] ? normalizeCampaign(rows[0]) : null;
+}
+
+export async function patchCampaignSetup(campaignId: string, patch: Partial<CampaignSetup>) {
+  const rows = await sql<Campaign[]>`
+    update campaigns
+    set state = jsonb_set(
+      state,
+      '{setup}',
+      coalesce(state -> 'setup', '{}'::jsonb) || ${toSqlJson(patch)},
+      true
+    )
+    where id = ${campaignId} and state ->> 'phase' = 'setup'
+    returning *
+  `;
+
+  return rows[0] ? normalizeCampaign(rows[0]) : null;
+}
+
+export async function upsertPlayerCharacter(campaignId: string, character: CampaignCharacter) {
+  if (!character.playerId) throw new Error("Player character requires playerId");
+
+  const rows = await sql<Campaign[]>`
+    update campaigns
+    set state = jsonb_set(
+      state,
+      '{characters}',
+      coalesce(
+        (
+          select jsonb_agg(existing_character)
+          from jsonb_array_elements(coalesce(state -> 'characters', '[]'::jsonb)) as existing_character
+          where existing_character ->> 'playerId' is distinct from ${character.playerId}
+        ),
+        '[]'::jsonb
+      ) || jsonb_build_array(${toSqlJson(character)}),
+      true
+    )
+    where id = ${campaignId} and state ->> 'phase' = 'setup'
     returning *
   `;
 

@@ -8,13 +8,16 @@
     "start": "bun src/index.ts",
     "commands": "bun src/discord/registerCommands.ts",
     "db:migrate": "bun src/db/applySchema.ts",
+    "test": "bun test",
     "check": "tsc --noEmit"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.93",
+    "@discordjs/voice": "0.19.2",
     "ai": "^6.0.248",
     "discord.js": "^14.19.3",
     "dotenv": "^16.4.7",
+    "opusscript": "0.1.1",
     "postgres": "^3.4.5",
     "zod": "^4.4.3"
   },
