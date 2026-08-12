@@ -1,4 +1,4 @@
-import type { Campaign } from "../db/campaignRepository";
+import type { Campaign, CampaignEvent } from "../db/campaignRepository";
 
 export const promptBase = `Você é um mestre de RPG narrativo em português do Brasil.
 
@@ -26,7 +26,7 @@ Tom:
 - Evite textos longos demais no Discord.
 - Termine respostas com uma situação clara para os jogadores reagirem.`;
 
-export function buildCampaignSystemPrompt(campaign: Campaign) {
+export function buildCampaignSystemPrompt(campaign: Campaign, recentEvents: CampaignEvent[] = []) {
   return `${promptBase}
 
 Campanha atual:
@@ -35,5 +35,8 @@ Campanha atual:
 - Status: ${campaign.status}
 
 Estado JSON atual:
-${JSON.stringify(campaign.state, null, 2)}`;
+${JSON.stringify(campaign.state, null, 2)}
+
+Eventos relevantes recentes:
+${recentEvents.length > 0 ? JSON.stringify(recentEvents, null, 2) : "Nenhum evento registrado."}`;
 }

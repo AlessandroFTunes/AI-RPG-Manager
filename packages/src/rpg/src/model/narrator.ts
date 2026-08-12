@@ -1,5 +1,5 @@
 import { generateText, stepCountIs, type ModelMessage } from "ai";
-import type { Campaign, CampaignMessage } from "../db/campaignRepository";
+import type { Campaign, CampaignEvent, CampaignMessage } from "../db/campaignRepository";
 import { patchCampaignState } from "../db/campaignRepository";
 import { createTools } from "../tools";
 import { buildCampaignSystemPrompt, promptBase } from "./promptBase";
@@ -8,6 +8,7 @@ import { model } from "./provider";
 type NarrateInput = {
   campaign: Campaign;
   recentMessages: CampaignMessage[];
+  recentEvents: CampaignEvent[];
   authorId: string;
 };
 
@@ -30,7 +31,7 @@ function toModelMessages(messages: CampaignMessage[]): ModelMessage[] {
 export async function narratePlayerAction(input: NarrateInput) {
   const result = await generateText({
     model,
-    system: buildCampaignSystemPrompt(input.campaign),
+    system: buildCampaignSystemPrompt(input.campaign, input.recentEvents),
     messages: toModelMessages(input.recentMessages),
     tools: createTools({ campaignId: input.campaign.id, authorId: input.authorId }),
     stopWhen: stepCountIs(8),

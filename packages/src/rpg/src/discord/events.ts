@@ -15,6 +15,7 @@ import {
   saveCampaignMessage,
   saveDiceRoll,
 } from "../db/campaignRepository";
+import { buildCampaignContext } from "../model/campaignContext";
 import { narratePlayerAction, summarizeCampaign } from "../model/narrator";
 import { rollDiceExpression } from "../tools";
 import { sendLongMessage } from "./sendLongMessage";
@@ -219,7 +220,7 @@ async function handleCampaignMessage(message: Message) {
   if (!campaign) return;
 
   await message.channel.sendTyping();
-  await saveCampaignMessage({
+  const savedMessage = await saveCampaignMessage({
     campaignId: campaign.id,
     discordMessageId: message.id,
     authorId: message.author.id,
@@ -227,11 +228,11 @@ async function handleCampaignMessage(message: Message) {
     role: "user",
     content,
   });
+  if (!savedMessage?.inserted) return;
 
-  const recentMessages = await getRecentCampaignMessages(campaign.id, 24);
+  const context = await buildCampaignContext(campaign.id);
   const response = await narratePlayerAction({
-    campaign,
-    recentMessages,
+    ...context,
     authorId: message.author.id,
   });
 

@@ -12,7 +12,7 @@ export function createTools(context: { campaignId: string; authorId?: string }) 
     updateCampaignState: createUpdateCampaignStateTool(context.campaignId),
     rollDice: createRollDiceTool(context),
     askPlayers: createAskPlayersTool(context.campaignId),
-    recordImportantMemory: createRecordImportantMemoryTool(context.campaignId),
+    recordImportantMemory: createRecordImportantMemoryTool(context.campaignId, context.authorId),
   };
 }
 

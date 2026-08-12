@@ -32,7 +32,10 @@ create table if not exists messages (
 );
 
 create index if not exists messages_campaign_id_created_at_idx on messages (campaign_id, created_at desc);
-create index if not exists messages_discord_message_id_idx on messages (discord_message_id);
+drop index if exists messages_discord_message_id_idx;
+create unique index if not exists messages_discord_message_id_unique_idx
+on messages (discord_message_id)
+where discord_message_id is not null;
 create index if not exists messages_metadata_gin_idx on messages using gin (metadata);
 
 create table if not exists dice_rolls (
@@ -45,6 +48,19 @@ create table if not exists dice_rolls (
 );
 
 create index if not exists dice_rolls_campaign_id_created_at_idx on dice_rolls (campaign_id, created_at desc);
+
+create table if not exists events (
+  id uuid primary key default gen_random_uuid(),
+  campaign_id uuid not null references campaigns (id) on delete cascade,
+  type text not null,
+  actor_id text,
+  data jsonb not null default '{}'::jsonb,
+  importance smallint not null default 1 check (importance between 1 and 5),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists events_campaign_id_created_at_idx on events (campaign_id, created_at desc);
+create index if not exists events_data_gin_idx on events using gin (data);
 
 create or replace function set_updated_at()
 returns trigger as $$
