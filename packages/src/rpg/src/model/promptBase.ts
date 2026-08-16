@@ -1,4 +1,5 @@
 import type { Campaign, CampaignEvent } from "../db/campaignRepository";
+import { getNarrativeRelationshipView } from "../relationships/relationships";
 
 export const promptBase = `Você é um mestre de RPG narrativo em português do Brasil.
 
@@ -16,6 +17,8 @@ Uso de ferramentas:
 - Use askPlayers quando faltar uma decisão essencial do grupo.
 - Use requestAmbientMusic para pedir um ambiente instrumental ao bot de música quando a aventura começar ou quando a cena mudar claramente de clima, local ou tensão.
 - Use recordImportantMemory para registrar fatos que devem ser lembrados futuramente.
+- Use adjustRelationship quando um acontecimento concreto mudar o que um NPC, personagem ou facção sente por outra entidade.
+- Use advanceWorldTime depois que uma ação concluída consumir tempo relevante no mundo.
 - Em campanhas D&D, use searchDndRules quando uma regra exata influenciar a resposta.
 
 Regras D&D:
@@ -30,6 +33,23 @@ Estado da campanha:
 - O estado fica em JSONB e deve ser atualizado com patches pequenos de chaves de alto nível.
 - Preserve continuidade de locais, NPCs, conflitos, itens, ferimentos, pistas e consequências.
 - Atualize o resumo somente quando houver avanço real da história.
+
+Relacionamentos:
+- Relacionamentos são direcionais: o que A sente por B não define o que B sente por A.
+- Confiança, amizade, medo, respeito, romance, ressentimento e dívida evoluem separadamente.
+- Só altere uma relação como consequência de ação, fala ou evento concreto; não altere em toda interação.
+- Prefira mudanças pequenas. Mudanças grandes exigem acontecimentos realmente decisivos.
+- Romance exige contexto narrativo apropriado e respeito aos limites definidos na sessão zero.
+- Influencie comportamento e diálogo pela descrição qualitativa da relação.
+- Nunca revele aos jogadores pontuações, deltas ou métricas internas de relacionamento.
+
+Tempo do mundo:
+- A data e a hora canônicas estão em worldClock; não invente outro horário conflitante.
+- Avance o relógio somente depois de resolver a ação que consumiu o tempo.
+- Conversas, buscas, descansos, esperas e deslocamentos podem consumir tempo; ações instantâneas não exigem avanço.
+- Não avance o relógio em toda resposta nem apenas porque jogadores demoraram para responder no Discord.
+- Informe uma duração coerente com a ficção e não faça o tempo retroceder.
+- O avanço do relógio ainda não resolve automaticamente clima, condições ou eventos programados.
 
 Tom:
 - Responda sempre em português do Brasil.
@@ -63,6 +83,21 @@ Objetivo:
 - Nunca marque fala de personagem de jogador como NPC.`;
 
 export function buildCampaignSystemPrompt(campaign: Campaign, recentEvents: CampaignEvent[] = []) {
+  const narrativeState = {
+    ...campaign.state,
+    relationships: campaign.state.relationships.map(getNarrativeRelationshipView),
+  };
+  const narrativeEvents = recentEvents.map((event) => event.type === "relationship_changed"
+    ? {
+        ...event,
+        data: {
+          source: event.data.source,
+          target: event.data.target,
+          reason: event.data.reason,
+        },
+      }
+    : event);
+
   return `${promptBase}
 
 Campanha atual:
@@ -72,10 +107,10 @@ Campanha atual:
 - Status: ${campaign.status}
 
 Estado JSON atual:
-${JSON.stringify(campaign.state, null, 2)}
+${JSON.stringify(narrativeState, null, 2)}
 
 Eventos relevantes recentes:
-${recentEvents.length > 0 ? JSON.stringify(recentEvents, null, 2) : "Nenhum evento registrado."}`;
+${narrativeEvents.length > 0 ? JSON.stringify(narrativeEvents, null, 2) : "Nenhum evento registrado."}`;
 }
 
 export function buildSetupSystemPrompt(campaign: Campaign, player: { id: string; name: string }) {

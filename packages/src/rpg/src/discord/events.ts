@@ -35,6 +35,7 @@ import { env } from "../config/env";
 import { voiceManager } from "../voice/voiceManager";
 import { normalizeNpcId, type NarratedResponse, type VoiceSegment } from "../voice/segments";
 import { queueAmbientMusicRequest } from "../music/ambientRequest";
+import { formatWorldClock } from "../world/worldClock";
 
 const campaignQueues = new Map<string, Promise<void>>();
 
@@ -386,6 +387,7 @@ async function showCampaignState(interaction: ChatInputCommandInteraction) {
       `Sistema/tema: ${campaign.system}`,
       `Regras: ${formatRuleset(state.ruleset)}`,
       `Fase: ${state.phase === "setup" ? "sessão zero" : "aventura"}`,
+      `Data e hora: ${formatWorldClock(state.worldClock)}`,
       `Cena atual: ${state.currentScene || "não definida"}`,
       `Resumo: ${state.summary || "sem resumo ainda"}`,
       `Personagens: ${state.characters.length > 0

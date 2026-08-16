@@ -1,4 +1,6 @@
 import {
+  createAdjustRelationshipTool,
+  createAdvanceWorldTimeTool,
   createAskPlayersTool,
   createReadCampaignTool,
   createRequestAmbientMusicTool,
@@ -19,6 +21,8 @@ export function createTools(context: {
   const tools = {
     readCampaign: createReadCampaignTool(context.campaignId),
     updateCampaignState: createUpdateCampaignStateTool(context.campaignId),
+    adjustRelationship: createAdjustRelationshipTool(context.campaignId, context.authorId),
+    advanceWorldTime: createAdvanceWorldTimeTool(context.campaignId, context.authorId),
     rollDice: createRollDiceTool(context),
     askPlayers: createAskPlayersTool(context.campaignId),
     requestAmbientMusic: createRequestAmbientMusicTool(context.campaignId, context.authorId),

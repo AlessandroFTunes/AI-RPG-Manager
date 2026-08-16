@@ -1,6 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 import {
+  adjustCampaignRelationship,
+  advanceCampaignWorldClock,
   getCampaignById,
   patchCampaignState,
   patchCampaignSetup,
@@ -9,6 +11,11 @@ import {
   upsertPlayerCharacter,
 } from "../db/campaignRepository";
 import { queueAmbientMusicRequest } from "../music/ambientRequest";
+import {
+  getNarrativeRelationshipView,
+  relationshipEntityTypes,
+} from "../relationships/relationships";
+import { formatWorldClock } from "../world/worldClock";
 
 const characterSchema = z.object({
   id: z.string().min(1),
@@ -25,7 +32,6 @@ const campaignStatePatchSchema = z.object({
   currentScene: z.string().optional(),
   characters: z.array(characterSchema).optional(),
   npcs: z.array(characterSchema.extend({
-    relationship: z.number().optional(),
     notes: z.array(z.string()).optional(),
   })).optional(),
   locations: z.array(z.object({
@@ -54,11 +60,105 @@ const sessionZeroPatchSchema = z.object({
   boundaries: z.array(z.string()).optional(),
 });
 
+const relationshipPartySchema = z.object({
+  type: z.enum(relationshipEntityTypes),
+  id: z.string().min(1),
+  name: z.string().min(1),
+});
+
+const relationshipDeltasSchema = z.object({
+  trust: z.number().int().min(-25).max(25).optional(),
+  friendship: z.number().int().min(-25).max(25).optional(),
+  fear: z.number().int().min(-25).max(25).optional(),
+  respect: z.number().int().min(-25).max(25).optional(),
+  romance: z.number().int().min(-25).max(25).optional(),
+  resentment: z.number().int().min(-25).max(25).optional(),
+  debt: z.number().int().min(-25).max(25).optional(),
+}).refine(
+  (deltas) => Object.values(deltas).some((delta) => delta !== undefined && delta !== 0),
+  { message: "Informe ao menos uma mudança diferente de zero." },
+);
+
+const worldDurationSchema = z.object({
+  days: z.number().int().min(0).max(365).optional(),
+  hours: z.number().int().min(0).max(23).optional(),
+  minutes: z.number().int().min(0).max(59).optional(),
+}).refine(
+  (duration) => Object.values(duration).some((value) => value !== undefined && value > 0),
+  { message: "Informe uma duração maior que zero." },
+);
+
 export function createReadCampaignTool(campaignId: string) {
   return tool({
-    description: "Lê o estado atual da campanha de RPG no banco.",
+    description: "Lê o estado atual da campanha. Relacionamentos são apresentados sem números ocultos.",
     inputSchema: z.object({}),
-    execute: async () => getCampaignById(campaignId),
+    execute: async () => {
+      const campaign = await getCampaignById(campaignId);
+      if (!campaign) return null;
+
+      return {
+        ...campaign,
+        state: {
+          ...campaign.state,
+          relationships: campaign.state.relationships.map(getNarrativeRelationshipView),
+        },
+      };
+    },
+  });
+}
+
+export function createAdjustRelationshipTool(campaignId: string, actorId?: string) {
+  return tool({
+    description:
+      "Registra uma mudança duradoura e direcional no relacionamento de uma entidade para outra. Use somente como consequência de um acontecimento concreto. Os valores são ocultos dos jogadores.",
+    inputSchema: z.object({
+      source: relationshipPartySchema.describe("Quem passou a sentir ou pensar de forma diferente"),
+      target: relationshipPartySchema.describe("A entidade que provocou ou recebeu essa mudança"),
+      deltas: relationshipDeltasSchema.describe("Mudanças pequenas; sinais positivos aumentam a dimensão"),
+      reason: z.string().min(3).max(300).describe("Acontecimento concreto que causou a mudança"),
+    }),
+    execute: async ({ source, target, deltas, reason }) => {
+      const relationship = await adjustCampaignRelationship({
+        campaignId,
+        actorId,
+        source,
+        target,
+        deltas,
+        reason,
+      });
+
+      return relationship
+        ? { success: true, relationship: getNarrativeRelationshipView(relationship), reason }
+        : { success: false, reason: "Campanha não encontrada." };
+    },
+  });
+}
+
+export function createAdvanceWorldTimeTool(campaignId: string, actorId?: string) {
+  return tool({
+    description:
+      "Avança de forma determinística a data e a hora da campanha. Use uma vez após uma ação, descanso, espera ou deslocamento que consuma tempo relevante; não use para ações instantâneas.",
+    inputSchema: z.object({
+      duration: worldDurationSchema,
+      reason: z.string().min(3).max(300).describe("Ação ou acontecimento que consumiu esse tempo"),
+    }),
+    execute: async ({ duration, reason }) => {
+      const result = await advanceCampaignWorldClock({
+        campaignId,
+        actorId,
+        duration,
+        reason,
+      });
+      if (!result) return { success: false, reason: "Campanha não encontrada." };
+
+      return {
+        success: true,
+        before: formatWorldClock(result.before),
+        after: formatWorldClock(result.after),
+        duration,
+        reason,
+      };
+    },
   });
 }
 
@@ -72,7 +172,13 @@ export function createUpdateCampaignStateTool(campaignId: string) {
     }),
     execute: async ({ patch, reason }) => {
       const campaign = await patchCampaignState(campaignId, patch);
-      return { success: Boolean(campaign), reason, state: campaign?.state ?? null };
+      const state = campaign
+        ? {
+            ...campaign.state,
+            relationships: campaign.state.relationships.map(getNarrativeRelationshipView),
+          }
+        : null;
+      return { success: Boolean(campaign), reason, state };
     },
   });
 }

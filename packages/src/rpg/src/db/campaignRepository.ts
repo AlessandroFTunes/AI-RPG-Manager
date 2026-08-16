@@ -1,4 +1,16 @@
 import { sql } from "../config/database";
+import {
+  adjustRelationships,
+  type CampaignRelationship,
+  type RelationshipDeltas,
+  type RelationshipParty,
+} from "../relationships/relationships";
+import {
+  advanceWorldClock,
+  createInitialWorldClock,
+  type WorldClock,
+  type WorldDuration,
+} from "../world/worldClock";
 
 export type CampaignStatus = "active" | "closed";
 export type CampaignMessageRole = "user" | "assistant" | "system" | "tool";
@@ -39,6 +51,7 @@ export type CampaignSetup = {
 };
 
 export type CampaignNpc = CampaignCharacter & {
+  /** @deprecated Use CampaignState.relationships for directional relationships. */
   relationship?: number;
   notes?: string[];
 };
@@ -77,6 +90,8 @@ export type CampaignState = {
   locations: CampaignLocation[];
   quests: CampaignQuest[];
   inventory: CampaignInventoryItem[];
+  relationships: CampaignRelationship[];
+  worldClock: WorldClock;
   flags: Record<string, unknown>;
   [key: string]: unknown;
 };
@@ -188,6 +203,8 @@ function normalizeCampaign(row: Campaign): Campaign {
       setup: state.setup ?? { premise: "", tone: "", boundaries: [] },
       voice: state.voice ?? { enabled: false, channelId: null, provider: "piper" },
       voiceCast: state.voiceCast ?? {},
+      relationships: state.relationships ?? [],
+      worldClock: state.worldClock ?? createInitialWorldClock(),
     },
   };
 }
@@ -218,6 +235,18 @@ function toSqlJson(value: unknown) {
   return sql.json(value as never);
 }
 
+function toWorldClockEventSnapshot(clock: WorldClock) {
+  return {
+    year: clock.year,
+    month: clock.month,
+    day: clock.day,
+    hour: clock.hour,
+    minute: clock.minute,
+    weekdayIndex: clock.weekdayIndex,
+    elapsedMinutes: clock.elapsedMinutes,
+  };
+}
+
 export function createInitialCampaignState(
   system: string,
   ruleset: CampaignRuleset,
@@ -241,6 +270,8 @@ export function createInitialCampaignState(
     locations: [],
     quests: [],
     inventory: [],
+    relationships: [],
+    worldClock: createInitialWorldClock(),
     flags: {},
   };
 }
@@ -456,6 +487,94 @@ export async function patchCampaignSetup(campaignId: string, patch: Partial<Camp
   `;
 
   return rows[0] ? normalizeCampaign(rows[0]) : null;
+}
+
+export async function adjustCampaignRelationship(input: {
+  campaignId: string;
+  actorId?: string;
+  source: RelationshipParty;
+  target: RelationshipParty;
+  deltas: RelationshipDeltas;
+  reason: string;
+}) {
+  return sql.begin(async (transaction) => {
+    const rows = await transaction<Campaign[]>`
+      select * from campaigns where id = ${input.campaignId} for update
+    `;
+    if (!rows[0]) return null;
+
+    const campaign = normalizeCampaign(rows[0]);
+    const result = adjustRelationships(campaign.state.relationships, {
+      source: input.source,
+      target: input.target,
+      deltas: input.deltas,
+    });
+
+    await transaction`
+      update campaigns
+      set state = jsonb_set(state, '{relationships}', ${toSqlJson(result.relationships)}, true)
+      where id = ${input.campaignId}
+    `;
+    await transaction`
+      insert into events (campaign_id, type, actor_id, data, importance)
+      values (
+        ${input.campaignId},
+        'relationship_changed',
+        ${input.actorId ?? null},
+        ${toSqlJson({
+          relationshipId: result.relationship.id,
+          source: input.source,
+          target: input.target,
+          deltas: input.deltas,
+          reason: input.reason,
+        })},
+        3
+      )
+    `;
+
+    return result.relationship;
+  });
+}
+
+export async function advanceCampaignWorldClock(input: {
+  campaignId: string;
+  actorId?: string;
+  duration: WorldDuration;
+  reason: string;
+}) {
+  return sql.begin(async (transaction) => {
+    const rows = await transaction<Campaign[]>`
+      select * from campaigns where id = ${input.campaignId} for update
+    `;
+    if (!rows[0]) return null;
+
+    const campaign = normalizeCampaign(rows[0]);
+    const before = campaign.state.worldClock;
+    const after = advanceWorldClock(before, input.duration);
+
+    await transaction`
+      update campaigns
+      set state = jsonb_set(state, '{worldClock}', ${toSqlJson(after)}, true)
+      where id = ${input.campaignId}
+    `;
+    await transaction`
+      insert into events (campaign_id, type, actor_id, data, importance)
+      values (
+        ${input.campaignId},
+        'world_clock_advanced',
+        ${input.actorId ?? null},
+        ${toSqlJson({
+          duration: input.duration,
+          reason: input.reason,
+          before: toWorldClockEventSnapshot(before),
+          after: toWorldClockEventSnapshot(after),
+        })},
+        2
+      )
+    `;
+
+    return { before, after };
+  });
 }
 
 export async function upsertPlayerCharacter(campaignId: string, character: CampaignCharacter) {

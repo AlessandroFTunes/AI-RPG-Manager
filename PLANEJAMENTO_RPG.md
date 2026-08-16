@@ -546,17 +546,23 @@ Respostas de ficha, inventário e codex devem ser privadas quando puderem revela
 
 ## 11. Roadmap de implementação
 
+Legenda:
+
+- `[x]`: concluído e funcional;
+- `[ ] **Em andamento:**`: parcialmente implementado;
+- `[ ]`: ainda não iniciado.
+
 ### Fase 0: fundação técnica
 
 Objetivo: tornar evolução e migrações seguras antes de ampliar o domínio.
 
 - [ ] Adicionar versão explícita ao estado da campanha.
 - [ ] Criar sistema incremental de migrações SQL.
-- [ ] Definir schemas Zod para leitura e escrita de todo estado persistido.
-- [ ] Introduzir `interaction_id` e idempotência.
-- [ ] Substituir patches amplos de estado por operações de domínio específicas.
-- [ ] Criar transações por interação e controle de concorrência no banco.
-- [ ] Definir contratos compartilhados entre bot de RPG e bot de música.
+- [ ] **Em andamento:** definir schemas Zod para leitura e escrita de todo estado persistido. As ferramentas validam parte das escritas, mas a leitura do estado completo ainda não possui schema.
+- [ ] **Em andamento:** introduzir `interaction_id` e idempotência. Mensagens do Discord já são deduplicadas, mas comandos, rolagens e eventos ainda não compartilham um identificador de interação.
+- [ ] **Em andamento:** substituir patches amplos de estado por operações de domínio específicas. Relacionamentos, relógio, sessão zero, personagens e vozes já possuem operações dedicadas.
+- [ ] **Em andamento:** criar transações por interação e controle de concorrência no banco. Relacionamentos, relógio e vozes usam transações e locks, mas a interação completa ainda não é atômica entre múltiplas instâncias.
+- [ ] **Em andamento:** definir contratos compartilhados entre bot de RPG e bot de música. A fila persistente já possui formato e ciclo de estados, mas o contrato ainda não é compartilhado e versionado.
 - [ ] Adicionar logs estruturados com `campaign_id`, `interaction_id` e duração.
 
 Critérios de aceite:
@@ -571,15 +577,15 @@ Critérios de aceite:
 Objetivo: estabelecer a fonte de verdade mínima para campanhas coerentes.
 
 - [ ] Criar fichas estruturadas de personagem por ruleset.
-- [ ] Implementar recursos, HP, condições, inventário e descanso.
+- [ ] **Em andamento:** implementar recursos, HP, condições, inventário e descanso. Existe inventário básico persistente, sem ficha mecânica, HP, condições ou descanso.
 - [ ] Criar Intent Parser com saída validada.
 - [ ] Criar Rules Engine com interface por ruleset.
 - [ ] Resolver ataques, testes e dano antes da chamada ao narrador.
-- [ ] Implementar memória factual e controle de conhecimento.
+- [ ] **Em andamento:** implementar memória factual e controle de conhecimento. Memórias importantes são registradas como eventos, ainda sem fatos estruturados ou escopos de conhecimento.
 - [ ] Implementar memória individual de NPCs.
-- [ ] Criar eventos canônicos append-only.
+- [ ] **Em andamento:** criar eventos canônicos append-only. Início de campanha, memórias, relacionamentos e relógio já geram eventos; patches genéricos ainda não são totalmente auditados.
 - [ ] Montar contexto filtrado por personagem e cena.
-- [ ] Adicionar testes unitários para toda resolução mecânica.
+- [ ] **Em andamento:** adicionar testes unitários para toda resolução mecânica. Relógio, relacionamentos, dados e utilitários possuem testes; combate, HP, condições e descanso ainda não existem.
 
 Critérios de aceite:
 
@@ -593,14 +599,14 @@ Critérios de aceite:
 
 Objetivo: tornar o mundo consistente e explorável.
 
-- [ ] Implementar calendário e relógio do mundo.
-- [ ] Registrar duração das ações.
+- [x] Implementar calendário e relógio do mundo.
+- [ ] **Em andamento:** registrar duração das ações. A ferramenta `advanceWorldTime` registra duração e motivo, mas ainda depende da chamada da LLM e não deriva a duração de uma ação estruturada.
 - [ ] Criar hierarquia de locais e posição de entidades.
 - [ ] Implementar visão, audição e presença em cena.
 - [ ] Criar rotas, distâncias e velocidades.
 - [ ] Implementar viagens em etapas.
-- [ ] Criar relacionamentos multidimensionais e ocultos.
-- [ ] Estruturar missões, objetivos, prazos e consequências.
+- [x] Criar relacionamentos multidimensionais e ocultos.
+- [ ] **Em andamento:** estruturar missões, objetivos, prazos e consequências. Existem missões básicas com título, descrição e status, ainda sem etapas, prazos ou consequências.
 - [ ] Estruturar mistérios com verdade, pistas e testemunhas.
 - [ ] Criar diário público e registro privado do Mestre.
 - [ ] Implementar codex com desbloqueio por conhecimento.
@@ -617,14 +623,14 @@ Critérios de aceite:
 
 Objetivo: ampliar imersão sem comprometer o núcleo do jogo.
 
-- [ ] Padronizar estados de música, intensidade e transições.
-- [ ] Implementar crossfade e manutenção de tema por cena.
-- [ ] Criar biblioteca e fila de ambientes sonoros.
+- [ ] **Em andamento:** padronizar estados de música, intensidade e transições. Pedidos já carregam cena, clima, energia e substituição, mas ainda usam valores livres e não possuem duração de transição.
+- [ ] **Em andamento:** implementar crossfade e manutenção de tema por cena. Cooldown, `themeHint` e controle de substituição reduzem trocas, mas ainda não existe crossfade real nem vínculo persistente entre cena e tema.
+- [ ] **Em andamento:** criar biblioteca e fila de ambientes sonoros. Existe fila de música instrumental, ainda sem catálogo independente de ambientes como chuva, floresta ou mercado.
 - [ ] Criar eventos de SFX com prioridade e cooldown.
-- [ ] Persistir perfil de voz por NPC.
-- [ ] Adicionar emoção, velocidade e estilo ao TTS.
-- [ ] Definir fallback quando música, SFX ou TTS falharem.
-- [ ] Adicionar controles para jogadores desativarem mídia.
+- [x] Persistir perfil de voz por NPC.
+- [ ] **Em andamento:** adicionar emoção, velocidade e estilo ao TTS. Perfis aplicam variações fixas de tom, velocidade e filtros, mas não aceitam emoção ou estilo por fala.
+- [ ] **Em andamento:** definir fallback quando música, SFX ou TTS falharem. TTS e planejamento musical possuem recuperação parcial; falta uma política unificada e cobertura para SFX.
+- [ ] **Em andamento:** adicionar controles para jogadores desativarem mídia. O bot de música oferece parar e sair, mas ainda não há preferência por jogador nem controle equivalente para TTS.
 
 Critérios de aceite:
 

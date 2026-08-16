@@ -5,6 +5,7 @@ import { createSetupTools, createTools } from "../tools";
 import { buildCampaignSystemPrompt, buildSetupSystemPrompt, promptBase } from "./promptBase";
 import { model } from "./provider";
 import { parseVoiceSegments } from "../voice/segments";
+import { getNarrativeRelationshipView } from "../relationships/relationships";
 
 type NarrateInput = {
   campaign: Campaign;
@@ -90,6 +91,10 @@ Abra a campanha agora:
 }
 
 export async function summarizeCampaign(campaign: Campaign, recentMessages: CampaignMessage[]) {
+  const narrativeState = {
+    ...campaign.state,
+    relationships: campaign.state.relationships.map(getNarrativeRelationshipView),
+  };
   const result = await generateText({
     model,
     maxRetries: 0,
@@ -97,7 +102,7 @@ export async function summarizeCampaign(campaign: Campaign, recentMessages: Camp
     messages: [
       {
         role: "user",
-        content: `Campanha: ${campaign.title}\nEstado atual:\n${JSON.stringify(campaign.state, null, 2)}\n\nMensagens recentes:\n${recentMessages
+        content: `Campanha: ${campaign.title}\nEstado atual:\n${JSON.stringify(narrativeState, null, 2)}\n\nMensagens recentes:\n${recentMessages
           .map((message) => `${message.role.toUpperCase()}${message.author_name ? ` (${message.author_name})` : ""}: ${message.content}`)
           .join("\n")}`,
       },
