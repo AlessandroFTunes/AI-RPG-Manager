@@ -1,6 +1,7 @@
 import {
   createAskPlayersTool,
   createReadCampaignTool,
+  createRequestAmbientMusicTool,
   createRecordImportantMemoryTool,
   createSavePlayerCharacterTool,
   createUpdateSessionZeroTool,
@@ -20,6 +21,7 @@ export function createTools(context: {
     updateCampaignState: createUpdateCampaignStateTool(context.campaignId),
     rollDice: createRollDiceTool(context),
     askPlayers: createAskPlayersTool(context.campaignId),
+    requestAmbientMusic: createRequestAmbientMusicTool(context.campaignId, context.authorId),
     recordImportantMemory: createRecordImportantMemoryTool(context.campaignId, context.authorId),
   };
 

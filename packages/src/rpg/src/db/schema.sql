@@ -62,6 +62,31 @@ create table if not exists events (
 create index if not exists events_campaign_id_created_at_idx on events (campaign_id, created_at desc);
 create index if not exists events_data_gin_idx on events using gin (data);
 
+create table if not exists music_requests (
+  id uuid primary key default gen_random_uuid(),
+  campaign_id uuid not null references campaigns (id) on delete cascade,
+  guild_id text not null,
+  thread_id text not null,
+  voice_channel_id text not null,
+  requested_by text,
+  source text not null default 'auto' check (source in ('auto', 'manual')),
+  status text not null default 'pending' check (status in ('pending', 'processing', 'completed', 'failed', 'cancelled')),
+  indication text,
+  reason text not null,
+  replace_current boolean not null default false,
+  context jsonb not null default '{}'::jsonb,
+  result jsonb not null default '{}'::jsonb,
+  error text,
+  processed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists music_requests_status_created_at_idx on music_requests (status, created_at asc);
+create index if not exists music_requests_campaign_id_created_at_idx on music_requests (campaign_id, created_at desc);
+create index if not exists music_requests_guild_id_created_at_idx on music_requests (guild_id, created_at desc);
+create index if not exists music_requests_context_gin_idx on music_requests using gin (context);
+
 create or replace function set_updated_at()
 returns trigger as $$
 begin
@@ -73,4 +98,9 @@ $$ language plpgsql;
 drop trigger if exists campaigns_set_updated_at on campaigns;
 create trigger campaigns_set_updated_at
 before update on campaigns
+for each row execute function set_updated_at();
+
+drop trigger if exists music_requests_set_updated_at on music_requests;
+create trigger music_requests_set_updated_at
+before update on music_requests
 for each row execute function set_updated_at();

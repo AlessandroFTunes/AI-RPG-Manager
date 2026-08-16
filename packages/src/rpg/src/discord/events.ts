@@ -34,6 +34,7 @@ import { sendLongMessage } from "./sendLongMessage";
 import { env } from "../config/env";
 import { voiceManager } from "../voice/voiceManager";
 import { normalizeNpcId, type NarratedResponse, type VoiceSegment } from "../voice/segments";
+import { queueAmbientMusicRequest } from "../music/ambientRequest";
 
 const campaignQueues = new Map<string, Promise<void>>();
 
@@ -341,6 +342,16 @@ async function beginCampaign(interaction: ChatInputCommandInteraction) {
   if (!interaction.channel?.isSendable()) throw new Error("Campaign channel is not sendable");
   await sendLongMessage(interaction.channel, opening.content);
   await voiceManager.enqueue(campaign.guild_id, voiceSegments);
+  await queueAmbientMusicRequest(updatedCampaign, {
+    requestedBy: interaction.user.id,
+    source: "auto",
+    reason: "A aventura começou com uma nova cena de abertura.",
+    sceneType: "opening",
+    mood: updatedCampaign.state.setup.tone || undefined,
+    indication: updatedCampaign.state.setup.tone || undefined,
+    replaceCurrent: true,
+    force: true,
+  });
 }
 
 function getThreadId(interaction: ChatInputCommandInteraction) {

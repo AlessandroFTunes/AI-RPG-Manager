@@ -6,6 +6,8 @@ export type CampaignPhase = "setup" | "playing";
 export type CampaignRuleset = "narrative" | "dnd5e-2014" | "dnd5e-2024";
 export type SpeechProviderName = "piper" | "elevenlabs" | "openai";
 export type VoiceProfile = "narrator" | "deep" | "high" | "elder" | "young" | "dark" | "energetic";
+export type MusicRequestSource = "auto" | "manual";
+export type MusicRequestStatus = "pending" | "processing" | "completed" | "failed" | "cancelled";
 
 export type VoiceCastMember = {
   npcId: string;
@@ -115,6 +117,26 @@ export type CampaignEvent = {
   created_at: Date;
 };
 
+export type MusicRequest = {
+  id: string;
+  campaign_id: string;
+  guild_id: string;
+  thread_id: string;
+  voice_channel_id: string;
+  requested_by: string | null;
+  source: MusicRequestSource;
+  status: MusicRequestStatus;
+  indication: string | null;
+  reason: string;
+  replace_current: boolean;
+  context: Record<string, unknown>;
+  result: Record<string, unknown>;
+  error: string | null;
+  processed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
 export type CampaignStatePatch = Partial<Omit<CampaignState, "flags">> & {
   flags?: Record<string, unknown>;
 };
@@ -181,6 +203,14 @@ function normalizeEvent(row: CampaignEvent): CampaignEvent {
   return {
     ...row,
     data: parseJson<Record<string, unknown>>(row.data),
+  };
+}
+
+function normalizeMusicRequest(row: MusicRequest): MusicRequest {
+  return {
+    ...row,
+    context: parseJson<Record<string, unknown>>(row.context),
+    result: parseJson<Record<string, unknown>>(row.result),
   };
 }
 
@@ -283,6 +313,60 @@ export async function getActiveVoiceCampaignByGuild(guildId: string) {
   `;
 
   return rows[0] ? normalizeCampaign(rows[0]) : null;
+}
+
+export async function getOpenMusicRequestByCampaign(campaignId: string) {
+  const rows = await sql<MusicRequest[]>`
+    select * from music_requests
+    where campaign_id = ${campaignId}
+      and status in ('pending', 'processing')
+    order by created_at desc
+    limit 1
+  `;
+
+  return rows[0] ? normalizeMusicRequest(rows[0]) : null;
+}
+
+export async function createMusicRequest(input: {
+  campaignId: string;
+  guildId: string;
+  threadId: string;
+  voiceChannelId: string;
+  requestedBy?: string;
+  source?: MusicRequestSource;
+  indication?: string;
+  reason: string;
+  replaceCurrent?: boolean;
+  context?: Record<string, unknown>;
+}) {
+  const rows = await sql<MusicRequest[]>`
+    insert into music_requests (
+      campaign_id,
+      guild_id,
+      thread_id,
+      voice_channel_id,
+      requested_by,
+      source,
+      indication,
+      reason,
+      replace_current,
+      context
+    ) values (
+      ${input.campaignId},
+      ${input.guildId},
+      ${input.threadId},
+      ${input.voiceChannelId},
+      ${input.requestedBy ?? null},
+      ${input.source ?? 'auto'},
+      ${input.indication ?? null},
+      ${input.reason},
+      ${input.replaceCurrent ?? false},
+      ${toSqlJson(input.context ?? {})}
+    )
+    returning *
+  `;
+
+  return normalizeMusicRequest(rows[0]);
 }
 
 const npcVoiceProfiles: VoiceCastMember["profile"][] = [

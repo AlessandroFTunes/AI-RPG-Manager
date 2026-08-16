@@ -8,6 +8,7 @@ import {
   saveCampaignMessage,
   upsertPlayerCharacter,
 } from "../db/campaignRepository";
+import { queueAmbientMusicRequest } from "../music/ambientRequest";
 
 const characterSchema = z.object({
   id: z.string().min(1),
@@ -72,6 +73,38 @@ export function createUpdateCampaignStateTool(campaignId: string) {
     execute: async ({ patch, reason }) => {
       const campaign = await patchCampaignState(campaignId, patch);
       return { success: Boolean(campaign), reason, state: campaign?.state ?? null };
+    },
+  });
+}
+
+export function createRequestAmbientMusicTool(campaignId: string, actorId?: string) {
+  return tool({
+    description:
+      "Pede ao bot de música um ambiente instrumental sem voz com base na cena atual. Use quando a aventura começar ou quando houver uma mudança clara de clima, local ou tensão. Não use em toda resposta.",
+    inputSchema: z.object({
+      reason: z.string().min(1).describe("Por que a cena precisa de um novo ambiente agora"),
+      indication: z.string().optional().describe("Indicação curta extra para o tema musical desejado"),
+      sceneType: z.string().optional().describe("Tipo de cena, como exploração, taverna, ritual ou combate"),
+      mood: z.string().optional().describe("Clima dominante da trilha, como sombrio, calmo, místico ou tenso"),
+      energy: z.enum(["low", "medium", "high"]).optional(),
+      replaceCurrent: z.boolean().default(false).describe("Troque a trilha atual imediatamente apenas em mudanças fortes de cena"),
+    }),
+    execute: async ({ reason, indication, sceneType, mood, energy, replaceCurrent }) => {
+      const campaign = await getCampaignById(campaignId);
+      if (!campaign) {
+        return { success: false, queued: false, skipped: "campaign_missing" };
+      }
+
+      return queueAmbientMusicRequest(campaign, {
+        requestedBy: actorId,
+        source: "auto",
+        indication,
+        sceneType,
+        mood,
+        energy,
+        reason,
+        replaceCurrent,
+      });
     },
   });
 }
