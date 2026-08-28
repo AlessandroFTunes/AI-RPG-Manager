@@ -1,6 +1,8 @@
 # AI RPG Manager
 
 Discord RPG manager bot using Bun, TypeScript, Discord.js, PostgreSQL JSONB, and the Vercel AI SDK.
+This repo is pure vibecoding, just for fun.
+below are Claude's instructions, feel free to criticize haha
 
 The bots live as isolated packages:
 
@@ -22,36 +24,6 @@ The bots live as isolated packages:
 ## Setup
 
 Create a root `.env` file based on `packages/src/rpg/.env.example` and `packages/src/music/.env.example`.
-
-Required values:
-
-```env
-DISCORD_TOKEN=
-DISCORD_CLIENT_ID=
-DISCORD_GUILD_ID=
-
-MUSIC_DISCORD_TOKEN=
-MUSIC_DISCORD_CLIENT_ID=
-MUSIC_DISCORD_GUILD_ID=
-
-DATABASE_URL=
-
-AI_PROVIDER=nvidia
-NVIDIA_API_KEY=
-NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_MODEL=
-
-OPENROUTER_API_KEY=
-MUSIC_OPENROUTER_MODEL=openrouter/free
-
-YTDLP_BIN=yt-dlp
-FFMPEG_BIN=ffmpeg
-```
-
-Do not commit `.env`.
-
-Install `yt-dlp` in the host system before running the music bot.
-
 ## Commands
 
 From `packages/src/rpg`:
