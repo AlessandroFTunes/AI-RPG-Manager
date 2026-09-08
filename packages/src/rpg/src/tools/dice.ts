@@ -91,14 +91,14 @@ export function createRollDiceTool(context: { campaignId: string; authorId?: str
     }),
     execute: async ({ expression, reason }) => {
       const result = rollDiceExpression(expression);
-      await saveDiceRoll({
+      const saved = await saveDiceRoll({
         campaignId: context.campaignId,
         authorId: context.authorId,
         expression,
-        result: { ...result, reason },
+        result: { ...result, ...(reason ? { reason } : {}) },
       });
 
-      return { ...result, reason };
+      return saved.result as DiceRollResult & { reason?: string };
     },
   });
 }

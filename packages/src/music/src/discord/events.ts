@@ -1,16 +1,19 @@
 import { ChannelType, Events, type ChatInputCommandInteraction, type Client } from "discord.js";
+import { createLogger, runWithLogContext } from "../../../shared/logging/logger";
 import { ambientPlayer } from "../music/player";
 import { startMusicRequestWorker } from "../music/requestWorker";
 
+const logger = createLogger("music");
+
 export function registerDiscordEvents(client: Client) {
   client.once(Events.ClientReady, (readyClient) => {
-    console.log(`Music bot online as ${readyClient.user.tag}.`);
+    logger.info("service_ready", { discord_user: readyClient.user.tag });
     startMusicRequestWorker(readyClient);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "music") return;
-    await handleMusicCommand(interaction);
+    await runWithLogContext({ interaction_id: interaction.id }, () => handleMusicCommand(interaction));
   });
 
   client.on(Events.VoiceStateUpdate, async (oldState, newState) => {

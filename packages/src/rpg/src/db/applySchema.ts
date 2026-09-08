@@ -1,14 +1,5 @@
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { closeDatabase, sql } from "../config/database";
+import { runMigrations } from "./migrate";
+import { createLogger } from "../../../shared/logging/logger";
 
-const currentDir = dirname(fileURLToPath(import.meta.url));
-const schemaPath = resolve(currentDir, "schema.sql");
-const schema = await Bun.file(schemaPath).text();
-
-try {
-  await sql.unsafe(schema);
-  console.log("RPG database schema applied.");
-} finally {
-  await closeDatabase();
-}
+const result = await runMigrations();
+createLogger("rpg").info("database.migrations_complete", result);

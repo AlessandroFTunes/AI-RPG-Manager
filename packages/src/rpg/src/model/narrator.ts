@@ -1,6 +1,6 @@
 import { generateText, stepCountIs, type ModelMessage } from "ai";
 import type { Campaign, CampaignEvent, CampaignMessage } from "../db/campaignRepository";
-import { patchCampaignState } from "../db/campaignRepository";
+import { updateCampaignNarrative } from "../db/campaignRepository";
 import { createSetupTools, createTools } from "../tools";
 import { buildCampaignSystemPrompt, buildSetupSystemPrompt, promptBase } from "./promptBase";
 import { model } from "./provider";
@@ -111,7 +111,11 @@ export async function summarizeCampaign(campaign: Campaign, recentMessages: Camp
 
   const summary = result.text.trim();
   if (summary) {
-    await patchCampaignState(campaign.id, { summary });
+    await updateCampaignNarrative({
+      campaignId: campaign.id,
+      summary,
+      reason: "Resumo solicitado pelos jogadores.",
+    });
   }
 
   return summary || campaign.state.summary || "Ainda não há resumo suficiente para esta campanha.";

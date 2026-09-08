@@ -3,11 +3,15 @@ import { z } from "zod";
 import {
   adjustCampaignRelationship,
   advanceCampaignWorldClock,
+  changeCampaignInventory,
   getCampaignById,
-  patchCampaignState,
   patchCampaignSetup,
   saveCampaignEvent,
   saveCampaignMessage,
+  updateCampaignNarrative,
+  upsertCampaignLocation,
+  upsertCampaignNpc,
+  upsertCampaignQuest,
   upsertPlayerCharacter,
 } from "../db/campaignRepository";
 import { queueAmbientMusicRequest } from "../music/ambientRequest";
@@ -16,43 +20,6 @@ import {
   relationshipEntityTypes,
 } from "../relationships/relationships";
 import { formatWorldClock } from "../world/worldClock";
-
-const characterSchema = z.object({
-  id: z.string().min(1),
-  playerId: z.string().optional(),
-  playerName: z.string().optional(),
-  name: z.string().min(1),
-  description: z.string().optional(),
-  status: z.string().optional(),
-});
-
-const campaignStatePatchSchema = z.object({
-  system: z.string().optional(),
-  summary: z.string().optional(),
-  currentScene: z.string().optional(),
-  characters: z.array(characterSchema).optional(),
-  npcs: z.array(characterSchema.extend({
-    notes: z.array(z.string()).optional(),
-  })).optional(),
-  locations: z.array(z.object({
-    id: z.string().min(1),
-    name: z.string().min(1),
-    description: z.string().optional(),
-    visited: z.boolean().optional(),
-  })).optional(),
-  quests: z.array(z.object({
-    id: z.string().min(1),
-    title: z.string().min(1),
-    status: z.enum(["active", "completed", "failed"]),
-    description: z.string().optional(),
-  })).optional(),
-  inventory: z.array(z.object({
-    id: z.string().min(1),
-    name: z.string().min(1),
-    quantity: z.number().int().nonnegative(),
-  })).optional(),
-  flags: z.record(z.string(), z.unknown()).optional(),
-});
 
 const sessionZeroPatchSchema = z.object({
   premise: z.string().optional(),
@@ -162,24 +129,103 @@ export function createAdvanceWorldTimeTool(campaignId: string, actorId?: string)
   });
 }
 
-export function createUpdateCampaignStateTool(campaignId: string) {
+export function createUpdateNarrativeTool(campaignId: string, actorId?: string) {
   return tool({
     description:
-      "Atualiza o estado persistente JSONB da campanha com um patch pequeno. Use apenas para mudanças relevantes e duradouras.",
+      "Atualiza somente o resumo e/ou a descrição da cena atual. Não use para NPCs, locais, missões ou inventário.",
     inputSchema: z.object({
-      patch: campaignStatePatchSchema.describe("Patch com chaves de alto nível do estado"),
-      reason: z.string().optional().describe("Por que esse estado está sendo atualizado"),
+      summary: z.string().max(2_000).optional(),
+      currentScene: z.string().max(1_000).optional(),
+      reason: z.string().min(3).max(300),
+    }).refine((value) => value.summary !== undefined || value.currentScene !== undefined, {
+      message: "Informe resumo ou cena atual.",
     }),
-    execute: async ({ patch, reason }) => {
-      const campaign = await patchCampaignState(campaignId, patch);
-      const state = campaign
-        ? {
-            ...campaign.state,
-            relationships: campaign.state.relationships.map(getNarrativeRelationshipView),
-          }
-        : null;
-      return { success: Boolean(campaign), reason, state };
+    execute: async ({ summary, currentScene, reason }) => {
+      const campaign = await updateCampaignNarrative({
+        campaignId, actorId, summary, currentScene, reason,
+      });
+      return { success: Boolean(campaign), summary, currentScene, reason };
     },
+  });
+}
+
+export function createUpsertNpcTool(campaignId: string, actorId?: string) {
+  return tool({
+    description: "Cria ou atualiza um NPC persistente usando seu id estável.",
+    inputSchema: z.object({
+      npc: z.object({
+        id: z.string().min(1),
+        name: z.string().min(1),
+        description: z.string().optional(),
+        status: z.string().optional(),
+        notes: z.array(z.string()).optional(),
+      }),
+      reason: z.string().min(3).max(300),
+    }),
+    execute: async ({ npc, reason }) => ({
+      success: Boolean(await upsertCampaignNpc({ campaignId, actorId, npc, reason })),
+      npc,
+      reason,
+    }),
+  });
+}
+
+export function createUpsertLocationTool(campaignId: string, actorId?: string) {
+  return tool({
+    description: "Cria ou atualiza um local persistente usando seu id estável.",
+    inputSchema: z.object({
+      location: z.object({
+        id: z.string().min(1),
+        name: z.string().min(1),
+        description: z.string().optional(),
+        visited: z.boolean().optional(),
+      }),
+      reason: z.string().min(3).max(300),
+    }),
+    execute: async ({ location, reason }) => ({
+      success: Boolean(await upsertCampaignLocation({ campaignId, actorId, location, reason })),
+      location,
+      reason,
+    }),
+  });
+}
+
+export function createUpsertQuestTool(campaignId: string, actorId?: string) {
+  return tool({
+    description: "Cria ou atualiza uma missão persistente usando seu id estável.",
+    inputSchema: z.object({
+      quest: z.object({
+        id: z.string().min(1),
+        title: z.string().min(1),
+        status: z.enum(["active", "completed", "failed"]),
+        description: z.string().optional(),
+      }),
+      reason: z.string().min(3).max(300),
+    }),
+    execute: async ({ quest, reason }) => ({
+      success: Boolean(await upsertCampaignQuest({ campaignId, actorId, quest, reason })),
+      quest,
+      reason,
+    }),
+  });
+}
+
+export function createChangeInventoryTool(campaignId: string, actorId?: string) {
+  return tool({
+    description: "Adiciona ou remove uma quantidade de um item sem substituir o inventário completo.",
+    inputSchema: z.object({
+      item: z.object({ id: z.string().min(1), name: z.string().min(1) }),
+      quantityDelta: z.number().int().min(-10_000).max(10_000).refine((value) => value !== 0),
+      reason: z.string().min(3).max(300),
+    }),
+    execute: async ({ item, quantityDelta, reason }) => ({
+      success: Boolean(await changeCampaignInventory({
+        campaignId, actorId, item, quantityDelta, reason,
+      })),
+      item,
+      quantityDelta,
+      reason,
+    }),
   });
 }
 

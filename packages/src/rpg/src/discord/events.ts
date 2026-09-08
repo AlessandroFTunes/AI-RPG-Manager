@@ -13,8 +13,9 @@ import {
   getActiveCampaignByThread,
   getActiveVoiceCampaignByGuild,
   getActiveVoiceCampaigns,
+  getCampaignById,
   getRecentCampaignMessages,
-  patchCampaignState,
+  updateCampaignNarrative,
   registerNpcVoiceAppearances,
   saveCampaignEvent,
   saveCampaignMessage,
@@ -36,8 +37,15 @@ import { voiceManager } from "../voice/voiceManager";
 import { normalizeNpcId, type NarratedResponse, type VoiceSegment } from "../voice/segments";
 import { queueAmbientMusicRequest } from "../music/ambientRequest";
 import { formatWorldClock } from "../world/worldClock";
+import {
+  campaignLockKey,
+  guildCreationLockKey,
+  runPersistentInteraction,
+} from "../interactions/orchestrator";
+import { createLogger } from "../../../shared/logging/logger";
 
 const campaignQueues = new Map<string, Promise<void>>();
+const logger = createLogger("rpg");
 
 function enqueueCampaignTask(campaignId: string, task: () => Promise<void>) {
   const previousTask = campaignQueues.get(campaignId) ?? Promise.resolve();
@@ -61,7 +69,7 @@ export function registerDiscordEvents(client: Client) {
   voiceManager.setSummarizer(summarizeSpeechQueue);
 
   client.once(Events.ClientReady, async (readyClient) => {
-    console.log(`RPG bot online as ${readyClient.user.tag}.`);
+    logger.info("discord.ready", { bot_tag: readyClient.user.tag });
     await reconnectVoiceCampaigns(readyClient);
   });
 
@@ -77,7 +85,7 @@ export function registerDiscordEvents(client: Client) {
         try {
           await voiceManager.connect(newState.guild, configuredChannel, campaign.state.voice.provider);
         } catch (error) {
-          console.error("[voice reconnect]", error);
+          logger.error("voice.reconnect_failed", error, { campaign_id: campaign.id });
         }
       }
     }
@@ -95,9 +103,9 @@ export function registerDiscordEvents(client: Client) {
       await handleRpgCommand(interaction);
     } catch (error) {
       if (isAIProvidersUnavailableError(error)) {
-        console.warn("[rpg command] AI providers unavailable");
+        logger.warn("discord.command_ai_unavailable");
       } else {
-        console.error("[rpg command]", error);
+        logger.error("discord.command_failed", error, { interaction_id: interaction.id });
       }
       const message = getPublicErrorMessage(error);
 
@@ -114,9 +122,9 @@ export function registerDiscordEvents(client: Client) {
       await handleCampaignMessage(message);
     } catch (error) {
       if (isAIProvidersUnavailableError(error)) {
-        console.warn("[rpg message] AI providers unavailable");
+        logger.warn("discord.message_ai_unavailable", { interaction_id: message.id });
       } else {
-        console.error("[rpg message]", error);
+        logger.error("discord.message_failed", error, { interaction_id: message.id });
       }
       if (message.channel.isSendable()) {
         await message.channel.send(getPublicErrorMessage(error));
@@ -139,7 +147,7 @@ async function reconnectVoiceCampaigns(client: Client<true>) {
       await voiceManager.connect(guild, channel, campaign.state.voice.provider);
       connectedGuilds.add(guild.id);
     } catch (error) {
-      console.error("[voice startup]", error);
+      logger.error("voice.startup_failed", error, { campaign_id: campaign.id });
     }
   }
 }
@@ -199,6 +207,7 @@ async function startCampaign(interaction: ChatInputCommandInteraction) {
     await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
     return;
   }
+  const guildId = interaction.guildId;
 
   const channel = interaction.channel;
   if (!channel || channel.type !== ChannelType.GuildText) {
@@ -207,6 +216,12 @@ async function startCampaign(interaction: ChatInputCommandInteraction) {
   }
 
   await interaction.deferReply({ ephemeral: true });
+  const execution = await runPersistentInteraction({
+    externalId: `discord:interaction:${interaction.id}`,
+    actorId: interaction.user.id,
+    kind: "campaign_create",
+    lockKey: guildCreationLockKey(guildId),
+  }, async () => {
 
   const member = await interaction.guild!.members.fetch(interaction.user.id);
   const voiceChannel = member.voice.channel;
@@ -222,7 +237,7 @@ async function startCampaign(interaction: ChatInputCommandInteraction) {
     await interaction.editReply("Não tenho permissão para entrar e falar no seu canal de voz.");
     return;
   }
-  const existingVoiceCampaign = await getActiveVoiceCampaignByGuild(interaction.guildId);
+  const existingVoiceCampaign = await getActiveVoiceCampaignByGuild(guildId);
   if (existingVoiceCampaign) {
     await interaction.editReply(`Já existe uma campanha ativa usando voz neste servidor: **${existingVoiceCampaign.title}**.`);
     return;
@@ -240,7 +255,7 @@ async function startCampaign(interaction: ChatInputCommandInteraction) {
     });
 
     const campaign = await createCampaign({
-      guildId: interaction.guildId,
+      guildId,
       channelId: channel.id,
       threadId: thread.id,
       ownerId: interaction.user.id,
@@ -269,10 +284,14 @@ async function startCampaign(interaction: ChatInputCommandInteraction) {
     });
 
     await interaction.editReply(`Campanha criada: ${thread.toString()}`);
-    await voiceManager.enqueue(interaction.guildId, intro);
+    await voiceManager.enqueue(guildId, intro);
   } catch (error) {
-    voiceManager.disconnect(interaction.guildId);
+    voiceManager.disconnect(guildId);
     throw error;
+  }
+  });
+  if (execution.duplicate) {
+    await interaction.editReply("Este comando já foi processado anteriormente.");
   }
 }
 
@@ -310,28 +329,44 @@ async function beginCampaign(interaction: ChatInputCommandInteraction) {
   }
 
   await interaction.deferReply();
-  const opening = await openCampaign(campaign);
-  const voiceSegments = await assignNpcVoices(campaign.id, campaign.state.characters, opening);
+  const execution = await runPersistentInteraction({
+    externalId: `discord:interaction:${interaction.id}`,
+    campaignId: campaign.id,
+    actorId: interaction.user.id,
+    kind: "campaign_begin",
+    lockKey: campaignLockKey(campaign.id),
+  }, async () => {
+  const lockedCampaign = await getCampaignById(campaign.id);
+  if (!lockedCampaign || lockedCampaign.status !== "active") throw new Error("Campaign not found");
+  if (lockedCampaign.state.phase !== "setup") {
+    await interaction.editReply("A aventura já começou.");
+    return;
+  }
+  const opening = await openCampaign(lockedCampaign);
+  const voiceSegments = await assignNpcVoices(lockedCampaign.id, lockedCampaign.state.characters, opening);
   const currentScene = opening.content.split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 500);
-  const updatedCampaign = await patchCampaignState(campaign.id, {
+  const updatedCampaign = await updateCampaignNarrative({
+    campaignId: lockedCampaign.id,
+    actorId: interaction.user.id,
     phase: "playing",
     currentScene,
-    summary: `A campanha começou com ${campaign.state.characters.map((character) => character.name).join(", ")}.`,
+    summary: `A campanha começou com ${lockedCampaign.state.characters.map((character) => character.name).join(", ")}.`,
+    reason: "A sessão zero terminou e a campanha começou.",
   });
   if (!updatedCampaign) throw new Error("Campaign not found");
 
   await saveCampaignEvent({
-    campaignId: campaign.id,
+    campaignId: lockedCampaign.id,
     type: "campaign_started",
     actorId: interaction.user.id,
     data: {
-      premise: campaign.state.setup.premise,
-      characters: campaign.state.characters.map((character) => character.name),
+      premise: lockedCampaign.state.setup.premise,
+      characters: lockedCampaign.state.characters.map((character) => character.name),
     },
     importance: 5,
   });
   await saveCampaignMessage({
-    campaignId: campaign.id,
+    campaignId: lockedCampaign.id,
     authorId: interaction.client.user.id,
     authorName: interaction.client.user.displayName,
     role: "assistant",
@@ -342,7 +377,7 @@ async function beginCampaign(interaction: ChatInputCommandInteraction) {
   await interaction.editReply("A sessão zero terminou. A aventura começa agora.");
   if (!interaction.channel?.isSendable()) throw new Error("Campaign channel is not sendable");
   await sendLongMessage(interaction.channel, opening.content);
-  await voiceManager.enqueue(campaign.guild_id, voiceSegments);
+  await voiceManager.enqueue(lockedCampaign.guild_id, voiceSegments);
   await queueAmbientMusicRequest(updatedCampaign, {
     requestedBy: interaction.user.id,
     source: "auto",
@@ -353,6 +388,10 @@ async function beginCampaign(interaction: ChatInputCommandInteraction) {
     replaceCurrent: true,
     force: true,
   });
+  });
+  if (execution.duplicate) {
+    await interaction.editReply("Este comando já foi processado anteriormente.");
+  }
 }
 
 function getThreadId(interaction: ChatInputCommandInteraction) {
@@ -403,11 +442,20 @@ async function summarizeCurrentCampaign(interaction: ChatInputCommandInteraction
   if (!campaign) return;
 
   await interaction.deferReply();
-  const recentMessages = await getRecentCampaignMessages(campaign.id, 40);
-  const summary = await summarizeCampaign(campaign, recentMessages);
+  const execution = await runPersistentInteraction({
+    externalId: `discord:interaction:${interaction.id}`,
+    campaignId: campaign.id,
+    actorId: interaction.user.id,
+    kind: "campaign_summary",
+    lockKey: campaignLockKey(campaign.id),
+  }, async () => {
+  const lockedCampaign = await getCampaignById(campaign.id);
+  if (!lockedCampaign) throw new Error("Campaign not found");
+  const recentMessages = await getRecentCampaignMessages(lockedCampaign.id, 40);
+  const summary = await summarizeCampaign(lockedCampaign, recentMessages);
 
   await saveCampaignMessage({
-    campaignId: campaign.id,
+    campaignId: lockedCampaign.id,
     authorId: interaction.user.id,
     authorName: interaction.user.displayName,
     role: "assistant",
@@ -416,41 +464,70 @@ async function summarizeCurrentCampaign(interaction: ChatInputCommandInteraction
   });
 
   await interaction.editReply(`**Resumo atualizado**\n${summary}`);
-  await voiceManager.enqueue(campaign.guild_id, summary);
+  await voiceManager.enqueue(lockedCampaign.guild_id, summary);
+  });
+  if (execution.duplicate) {
+    await interaction.editReply("Este comando já foi processado anteriormente.");
+  }
 }
 
 async function rollInCampaign(interaction: ChatInputCommandInteraction) {
   const campaign = await requireActiveCampaign(interaction);
   if (!campaign) return;
 
+  await interaction.deferReply();
+  const execution = await runPersistentInteraction({
+    externalId: `discord:interaction:${interaction.id}`,
+    campaignId: campaign.id,
+    actorId: interaction.user.id,
+    kind: "campaign_roll",
+    lockKey: campaignLockKey(campaign.id),
+  }, async () => {
   const expression = interaction.options.getString("expressao", true);
   const result = rollDiceExpression(expression);
-  await saveDiceRoll({
+  const savedRoll = await saveDiceRoll({
     campaignId: campaign.id,
     authorId: interaction.user.id,
     expression,
     result,
   });
+  const persistedResult = savedRoll.result as typeof result;
 
   await saveCampaignMessage({
     campaignId: campaign.id,
     authorId: interaction.user.id,
     authorName: interaction.user.displayName,
     role: "tool",
-    content: result.detail,
-    metadata: { type: "dice_roll", result },
+    content: persistedResult.detail,
+    metadata: { type: "dice_roll", result: persistedResult },
   });
 
-  await interaction.reply(`🎲 ${interaction.user.displayName} rolou **${result.detail}**`);
+  await interaction.editReply(`🎲 ${interaction.user.displayName} rolou **${persistedResult.detail}**`);
+  });
+  if (execution.duplicate) {
+    await interaction.editReply("Este comando já foi processado anteriormente.");
+  }
 }
 
 async function closeCurrentCampaign(interaction: ChatInputCommandInteraction) {
   const campaign = await requireActiveCampaign(interaction);
   if (!campaign) return;
 
+  await interaction.deferReply();
+  const execution = await runPersistentInteraction({
+    externalId: `discord:interaction:${interaction.id}`,
+    campaignId: campaign.id,
+    actorId: interaction.user.id,
+    kind: "campaign_close",
+    lockKey: campaignLockKey(campaign.id),
+  }, async () => {
   await closeCampaign(campaign.id);
   if (campaign.state.voice.enabled) voiceManager.disconnect(campaign.guild_id);
-  await interaction.reply(`Campanha **${campaign.title}** encerrada.`);
+  await interaction.editReply(`Campanha **${campaign.title}** encerrada.`);
+  });
+  if (execution.duplicate) {
+    await interaction.editReply("Este comando já foi processado anteriormente.");
+  }
 }
 
 async function handleCampaignMessage(message: Message) {
@@ -464,48 +541,61 @@ async function handleCampaignMessage(message: Message) {
   if (!campaign) return;
 
   await enqueueCampaignTask(campaign.id, async () => {
-    await channel.sendTyping();
-    const savedMessage = await saveCampaignMessage({
+    await runPersistentInteraction({
+      externalId: `discord:message:${message.id}`,
       campaignId: campaign.id,
-      discordMessageId: message.id,
-      authorId: message.author.id,
-      authorName: message.member?.displayName ?? message.author.displayName,
-      role: "user",
-      content,
-    });
-    if (!savedMessage?.inserted) return;
+      actorId: message.author.id,
+      kind: "campaign_message",
+      lockKey: campaignLockKey(campaign.id),
+    }, async () => {
+      await channel.sendTyping();
+      const savedMessage = await saveCampaignMessage({
+        campaignId: campaign.id,
+        discordMessageId: message.id,
+        authorId: message.author.id,
+        authorName: message.member?.displayName ?? message.author.displayName,
+        role: "user",
+        content,
+      });
+      if (!savedMessage?.inserted) return;
 
-    const context = await buildCampaignContext(campaign.id);
-    const authorName = message.member?.displayName ?? message.author.displayName;
-    const response = context.campaign.state.phase === "setup"
-      ? await guideCampaignSetup({
-          ...context,
-          authorId: message.author.id,
-          authorName,
-        })
-      : await narratePlayerAction({
-          ...context,
-          authorId: message.author.id,
+      const context = await buildCampaignContext(campaign.id);
+      const authorName = message.member?.displayName ?? message.author.displayName;
+      const response = context.campaign.state.phase === "setup"
+        ? await guideCampaignSetup({
+            ...context,
+            authorId: message.author.id,
+            authorName,
+          })
+        : await narratePlayerAction({
+            ...context,
+            authorId: message.author.id,
+          });
+      const voiceSegments = await assignNpcVoices(campaign.id, context.campaign.state.characters, response);
+
+      await saveCampaignMessage({
+        campaignId: campaign.id,
+        authorId: message.client.user.id,
+        authorName: message.client.user.displayName,
+        role: "assistant",
+        content: response.content,
+        metadata: {
+          type: context.campaign.state.phase === "setup" ? "session_zero" : "narration",
+          voiceSegments,
+        },
+      });
+
+      if (context.campaign.state.phase === "playing" && response.content.toLowerCase().startsWith("resumo:")) {
+        await updateCampaignNarrative({
+          campaignId: campaign.id,
+          actorId: message.author.id,
+          summary: response.content.replace(/^resumo:\s*/i, ""),
+          reason: "A cena avançou após uma ação do jogador.",
         });
-    const voiceSegments = await assignNpcVoices(campaign.id, context.campaign.state.characters, response);
+      }
 
-    await saveCampaignMessage({
-      campaignId: campaign.id,
-      authorId: message.client.user.id,
-      authorName: message.client.user.displayName,
-      role: "assistant",
-      content: response.content,
-      metadata: {
-        type: context.campaign.state.phase === "setup" ? "session_zero" : "narration",
-        voiceSegments,
-      },
+      await sendLongMessage(channel, response.content);
+      await voiceManager.enqueue(campaign.guild_id, voiceSegments);
     });
-
-    if (context.campaign.state.phase === "playing" && response.content.toLowerCase().startsWith("resumo:")) {
-      await patchCampaignState(campaign.id, { summary: response.content.replace(/^resumo:\s*/i, "") });
-    }
-
-    await sendLongMessage(channel, response.content);
-    await voiceManager.enqueue(campaign.guild_id, voiceSegments);
   });
 }

@@ -1,5 +1,8 @@
 import type { LanguageModelV3, LanguageModelV3Middleware } from "@ai-sdk/provider";
 import { APICallError, wrapLanguageModel } from "ai";
+import { createLogger } from "../../../shared/logging/logger";
+
+const logger = createLogger("rpg");
 
 const NVIDIA_RETRY_DELAY_MS = 10_000;
 
@@ -38,7 +41,7 @@ export function createResilientModel(input: {
         return await doGenerate();
       } catch (firstError) {
         if (!isRateLimitError(firstError)) throw firstError;
-        console.warn("[ai] NVIDIA rate limited; retrying in 10 seconds");
+        logger.warn("ai_provider_rate_limited", { provider: "nvidia", retry_delay_ms: input.retryDelayMs ?? NVIDIA_RETRY_DELAY_MS });
       }
 
       await wait(input.retryDelayMs ?? NVIDIA_RETRY_DELAY_MS);
@@ -51,7 +54,7 @@ export function createResilientModel(input: {
           throw new AIProvidersUnavailableError({ cause: secondError });
         }
 
-        console.warn("[ai] NVIDIA still rate limited; using OpenRouter fallback");
+        logger.warn("ai_provider_fallback", { primary_provider: "nvidia", fallback_provider: "openrouter" });
         try {
           return await input.fallbackModel.doGenerate(params);
         } catch (fallbackError) {

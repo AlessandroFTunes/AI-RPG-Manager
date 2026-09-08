@@ -14,43 +14,33 @@ const ambientPlanSchema = z.object({
   avoidTerms: z.array(z.string()).default(["lyrics", "vocals", "cover", "live", "feat"]),
 });
 
-function readRecord(value: unknown) {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
-
-function readString(value: unknown) {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
-}
-
 function toFallbackQuery(parts: string[]) {
   const query = parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
   return `${query || "fantasy ambient"} instrumental ambient no vocals no lyrics`;
 }
 
 function buildFallbackPlan(campaign: Campaign, request: MusicRequest): AmbientPlan {
-  const context = readRecord(request.context);
-  const campaignContext = readRecord(context.campaign);
-  const requestContext = readRecord(context.request);
+  const context = request.context;
+  const campaignContext = context.campaign;
+  const requestContext = context.request;
   return {
-    mood: readString(requestContext.mood) || readString(campaignContext.tone) || "cinematic ambient",
-    energy: "low",
+    mood: requestContext.mood || campaignContext.tone || "cinematic ambient",
+    energy: requestContext.energy ?? "low",
     tension: "medium",
-    sceneType: readString(requestContext.sceneType) || "scene",
+    sceneType: requestContext.sceneType || "scene",
     youtubeQuery: toFallbackQuery([
-      readString(request.indication),
-      readString(campaignContext.themeHint),
-      readString(campaign.system),
-      readString(campaignContext.tone),
-      readString(campaignContext.currentScene),
+      request.indication ?? "",
+      campaignContext.themeHint ?? "",
+      campaign.system,
+      campaignContext.tone,
+      campaignContext.currentScene,
     ]),
     avoidTerms: ["lyrics", "vocals", "cover", "live", "feat", "song"],
   };
 }
 
 export async function generateAmbientPlan(campaign: Campaign, request: MusicRequest) {
-  const context = readRecord(request.context);
+  const context = request.context;
   const apiKey = env.MUSIC_OPENROUTER_API_KEY ?? env.OPENROUTER_API_KEY;
   const model = createOpenAI({
     apiKey,

@@ -2,12 +2,16 @@ import {
   createAdjustRelationshipTool,
   createAdvanceWorldTimeTool,
   createAskPlayersTool,
+  createChangeInventoryTool,
   createReadCampaignTool,
   createRequestAmbientMusicTool,
   createRecordImportantMemoryTool,
   createSavePlayerCharacterTool,
   createUpdateSessionZeroTool,
-  createUpdateCampaignStateTool,
+  createUpdateNarrativeTool,
+  createUpsertLocationTool,
+  createUpsertNpcTool,
+  createUpsertQuestTool,
 } from "./campaign";
 import type { CampaignRuleset } from "../db/campaignRepository";
 import { createRollDiceTool } from "./dice";
@@ -20,7 +24,11 @@ export function createTools(context: {
 }) {
   const tools = {
     readCampaign: createReadCampaignTool(context.campaignId),
-    updateCampaignState: createUpdateCampaignStateTool(context.campaignId),
+    updateNarrative: createUpdateNarrativeTool(context.campaignId, context.authorId),
+    upsertNpc: createUpsertNpcTool(context.campaignId, context.authorId),
+    upsertLocation: createUpsertLocationTool(context.campaignId, context.authorId),
+    upsertQuest: createUpsertQuestTool(context.campaignId, context.authorId),
+    changeInventory: createChangeInventoryTool(context.campaignId, context.authorId),
     adjustRelationship: createAdjustRelationshipTool(context.campaignId, context.authorId),
     advanceWorldTime: createAdvanceWorldTimeTool(context.campaignId, context.authorId),
     rollDice: createRollDiceTool(context),

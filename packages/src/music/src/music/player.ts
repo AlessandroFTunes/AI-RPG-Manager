@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -12,8 +13,11 @@ import {
   type VoiceConnection,
 } from "@discordjs/voice";
 import type { Guild, VoiceBasedChannel } from "discord.js";
+import { createLogger } from "../../../shared/logging/logger";
 import { env } from "../config/env";
 import type { AmbientTrack } from "./types";
+
+const logger = createLogger("music");
 
 type Session = {
   guildId: string;
@@ -22,7 +26,7 @@ type Session = {
   player: AudioPlayer;
   queue: AmbientTrack[];
   current?: AmbientTrack;
-  process?: ChildProcessWithoutNullStreams;
+  process?: ChildProcessByStdio<null, Readable, Readable>;
   emptyTimer?: ReturnType<typeof setTimeout>;
 };
 
@@ -69,7 +73,7 @@ export class AmbientPlayer {
       void this.playNext(session);
     });
     player.on("error", (error) => {
-      console.error("[music player]", error.message);
+      logger.error("music_player_error", error, { guild_id: guild.id });
       this.cleanupProcess(session);
       session.current = undefined;
       void this.playNext(session);
@@ -197,11 +201,11 @@ export class AmbientPlayer {
     ], { stdio: ["ignore", "pipe", "pipe"] });
 
     process.on("error", (error) => {
-      console.error("[music ffmpeg]", error.message);
+      logger.error("music_ffmpeg_error", error, { guild_id: session.guildId });
     });
     process.stderr.on("data", (chunk) => {
       const text = chunk.toString().trim();
-      if (text) console.warn("[music ffmpeg]", text);
+      if (text) logger.warn("music_ffmpeg_stderr", { guild_id: session.guildId, message: text });
     });
 
     session.process = process;

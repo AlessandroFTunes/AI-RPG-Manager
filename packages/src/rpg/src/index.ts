@@ -3,6 +3,9 @@ import { createDiscordClient } from "./config/discord";
 import { env } from "./config/env";
 import { registerDiscordEvents } from "./discord/events";
 import { voiceManager } from "./voice/voiceManager";
+import { createLogger } from "../../shared/logging/logger";
+
+const logger = createLogger("rpg");
 
 const client = createDiscordClient();
 
@@ -18,7 +21,7 @@ let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`Received ${signal}. Shutting down RPG bot...`);
+  logger.info("service_shutdown", { signal });
   voiceManager.destroyAll();
   client.destroy();
   await closeDatabase();

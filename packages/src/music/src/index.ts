@@ -4,6 +4,9 @@ import { env } from "./config/env";
 import { registerDiscordEvents } from "./discord/events";
 import { ambientPlayer } from "./music/player";
 import { stopMusicRequestWorker } from "./music/requestWorker";
+import { createLogger } from "../../shared/logging/logger";
+
+const logger = createLogger("music");
 
 const client = createDiscordClient();
 
@@ -19,7 +22,7 @@ let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`Received ${signal}. Shutting down music bot...`);
+  logger.info("service_shutdown", { signal });
   stopMusicRequestWorker();
   ambientPlayer.destroyAll();
   client.destroy();

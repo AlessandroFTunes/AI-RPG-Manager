@@ -2,19 +2,26 @@ import {
   createMusicRequest,
   getOpenMusicRequestByCampaign,
   getRecentCampaignMessages,
-  patchCampaignState,
+  updateCampaignMusicFlags,
   type Campaign,
   type MusicRequestSource,
 } from "../db/campaignRepository";
+import {
+  MUSIC_CONTRACT_VERSION,
+  parseMusicRequestContext,
+  type MusicEnergy,
+} from "../../../shared/music/contracts";
+import { createLogger } from "../../../shared/logging/logger";
 
 const MUSIC_REQUEST_COOLDOWN_MS = 15 * 60_000;
+const logger = createLogger("rpg");
 
 type QueueAmbientMusicInput = {
   requestedBy?: string;
   source?: MusicRequestSource;
   indication?: string;
   mood?: string;
-  energy?: string;
+  energy?: MusicEnergy;
   sceneType?: string;
   reason: string;
   replaceCurrent?: boolean;
@@ -78,7 +85,8 @@ export async function queueAmbientMusicRequest(campaign: Campaign, input: QueueA
     indication: readString(input.indication),
     reason: input.reason,
     replaceCurrent: input.replaceCurrent,
-    context: {
+    context: parseMusicRequestContext({
+      version: MUSIC_CONTRACT_VERSION,
       campaign: {
         title: campaign.title,
         system: campaign.system,
@@ -92,7 +100,7 @@ export async function queueAmbientMusicRequest(campaign: Campaign, input: QueueA
       request: {
         indication: readString(input.indication),
         mood: readString(input.mood),
-        energy: readString(input.energy),
+        energy: input.energy,
         sceneType: readString(input.sceneType),
         reason: input.reason,
         replaceCurrent: input.replaceCurrent ?? false,
@@ -102,20 +110,26 @@ export async function queueAmbientMusicRequest(campaign: Campaign, input: QueueA
         authorName: message.author_name,
         content: message.content.slice(0, 500),
       })),
-    },
+    }),
   });
 
+  const themeHint = readString(input.indication) ?? readString(currentFlags.themeHint);
   const nextMusicFlags = {
     ...currentFlags,
     autoEnabled: readBoolean(currentFlags.autoEnabled) ?? true,
-    themeHint: readString(input.indication) ?? readString(currentFlags.themeHint),
+    ...(themeHint ? { themeHint } : {}),
     pendingRequestId: request.id,
     lastRequestAt: now.toISOString(),
     lastReason: input.reason,
     cooldownUntil: new Date(now.getTime() + MUSIC_REQUEST_COOLDOWN_MS).toISOString(),
   };
 
-  await patchCampaignState(campaign.id, { flags: { music: nextMusicFlags } });
+  await updateCampaignMusicFlags(campaign.id, nextMusicFlags);
+  logger.info("music_request_queued", {
+    campaign_id: campaign.id,
+    operation_key: request.id,
+    source: request.source,
+  });
 
   return { success: true, queued: true, requestId: request.id, skipped: null };
 }

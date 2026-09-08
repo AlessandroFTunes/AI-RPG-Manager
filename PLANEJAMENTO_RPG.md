@@ -36,6 +36,7 @@ A LLM deve interpretar intenções e produzir narrativa. Dados objetivos, regras
 
 A LLM pode propor interpretações, falas e descrições. Ela não pode decidir sozinha:
 
+- [x] Utilitário determinístico... @hermes_tlg). Nota do projeto: 7/10 — base sólida, falta testes de integração mais amplos e CI.
 - resultado de testes;
 - dano, cura, recursos ou condições;
 - posição de personagens;
@@ -556,14 +557,14 @@ Legenda:
 
 Objetivo: tornar evolução e migrações seguras antes de ampliar o domínio.
 
-- [ ] Adicionar versão explícita ao estado da campanha.
-- [ ] Criar sistema incremental de migrações SQL.
-- [ ] **Em andamento:** definir schemas Zod para leitura e escrita de todo estado persistido. As ferramentas validam parte das escritas, mas a leitura do estado completo ainda não possui schema.
-- [ ] **Em andamento:** introduzir `interaction_id` e idempotência. Mensagens do Discord já são deduplicadas, mas comandos, rolagens e eventos ainda não compartilham um identificador de interação.
-- [ ] **Em andamento:** substituir patches amplos de estado por operações de domínio específicas. Relacionamentos, relógio, sessão zero, personagens e vozes já possuem operações dedicadas.
-- [ ] **Em andamento:** criar transações por interação e controle de concorrência no banco. Relacionamentos, relógio e vozes usam transações e locks, mas a interação completa ainda não é atômica entre múltiplas instâncias.
-- [ ] **Em andamento:** definir contratos compartilhados entre bot de RPG e bot de música. A fila persistente já possui formato e ciclo de estados, mas o contrato ainda não é compartilhado e versionado.
-- [ ] Adicionar logs estruturados com `campaign_id`, `interaction_id` e duração.
+- [x] Adicionar versão explícita ao estado da campanha.
+- [x] Criar sistema incremental de migrações SQL.
+- [x] Definir schemas Zod para leitura e escrita de todo estado persistido.
+- [x] Introduzir `interaction_id` e idempotência.
+- [x] Substituir patches amplos de estado por operações de domínio específicas.
+- [x] Criar transações por interação e controle de concorrência no banco.
+- [x] Definir contratos compartilhados entre bot de RPG e bot de música.
+- [x] Adicionar logs estruturados com `campaign_id`, `interaction_id` e duração.
 
 Critérios de aceite:
 

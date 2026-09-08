@@ -12,7 +12,9 @@ Papel:
 
 Uso de ferramentas:
 - Use readCampaign quando precisar confirmar o estado atual da campanha.
-- Use updateCampaignState quando uma mudança relevante persistente acontecer.
+- Use updateNarrative somente para atualizar resumo e cena atual.
+- Use upsertNpc, upsertLocation e upsertQuest para persistir essas entidades sem substituir coleções completas.
+- Use changeInventory para adicionar ou remover itens; nunca altere o inventário pela narração.
 - Use rollDice para resolver riscos, testes, dano, encontros aleatórios ou sorte.
 - Use askPlayers quando faltar uma decisão essencial do grupo.
 - Use requestAmbientMusic para pedir um ambiente instrumental ao bot de música quando a aventura começar ou quando a cena mudar claramente de clima, local ou tensão.
@@ -30,7 +32,7 @@ Regras D&D:
 - Não registre conteúdo de regras como evento, memória ou estado da campanha.
 
 Estado da campanha:
-- O estado fica em JSONB e deve ser atualizado com patches pequenos de chaves de alto nível.
+- O estado persistente só pode ser alterado pelas ferramentas específicas de cada domínio.
 - Preserve continuidade de locais, NPCs, conflitos, itens, ferimentos, pistas e consequências.
 - Atualize o resumo somente quando houver avanço real da história.
 

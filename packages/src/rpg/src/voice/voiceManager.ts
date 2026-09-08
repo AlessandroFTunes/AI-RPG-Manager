@@ -12,11 +12,14 @@ import {
   type VoiceConnection,
 } from "@discordjs/voice";
 import type { Guild, VoiceBasedChannel } from "discord.js";
+import { createLogger } from "../../../shared/logging/logger";
 import type { SpeechProviderName } from "../db/campaignRepository";
 import { getSpeechProvider } from "../speech";
 import { compactSpeechQueue, sanitizeSpeechText } from "./sanitizeSpeech";
 import type { VoiceSegment } from "./segments";
 import { transformVoice } from "./transformVoice";
+
+const logger = createLogger("rpg");
 
 const MAX_PENDING_SPEECH = 3;
 
@@ -79,7 +82,7 @@ export class VoiceManager {
       void this.playNext(session);
     });
     player.on("error", (error) => {
-      console.error("[voice player]", error.message);
+      logger.error("voice_player_error", error, { guild_id: guild.id });
       session.playing = false;
       void this.playNext(session);
     });
@@ -162,7 +165,11 @@ export class VoiceManager {
         try {
           audio = await transformVoice(audio, segment.profile);
         } catch (error) {
-          console.warn(`[voice] Could not apply profile ${segment.profile}`, error);
+          logger.warn("voice_profile_transform_failed", {
+            guild_id: session.guildId,
+            profile: segment.profile,
+            error,
+          });
         }
       }
       const resource = createAudioResource(Readable.from([audio]), {
@@ -170,7 +177,7 @@ export class VoiceManager {
       });
       session.player.play(resource);
     } catch (error) {
-      console.error("[voice synthesis]", error);
+      logger.error("voice_synthesis_failed", error, { guild_id: session.guildId });
       session.playing = false;
       void this.playNext(session);
     }
@@ -185,7 +192,7 @@ export class VoiceManager {
       const summary = sanitizeSpeechText(await this.summarizer(contents));
       session.pending.unshift([{ speaker: "narrator", profile: "narrator", text: summary || compactSpeechQueue(contents) }]);
     } catch (error) {
-      console.warn("[voice] Could not summarize audio queue", error);
+      logger.warn("voice_queue_summary_failed", { guild_id: session.guildId, error });
       session.pending.unshift([{ speaker: "narrator", profile: "narrator", text: compactSpeechQueue(contents) }]);
     } finally {
       session.summarizing = false;

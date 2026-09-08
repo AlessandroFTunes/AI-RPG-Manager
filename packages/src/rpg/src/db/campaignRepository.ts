@@ -11,6 +11,17 @@ import {
   type WorldClock,
   type WorldDuration,
 } from "../world/worldClock";
+import {
+  parseMusicRequestContext,
+  parseMusicRequestSource,
+  parseMusicRequestStatus,
+  type MusicRequestContext,
+  type MusicRequestSource,
+  type MusicRequestStatus,
+} from "../../../shared/music/contracts";
+import { parseCampaignState } from "./campaignStateSchema";
+import { nextInteractionEffect } from "../interactions/context";
+import { parsePersistentRecord } from "./persistenceSchemas";
 
 export type CampaignStatus = "active" | "closed";
 export type CampaignMessageRole = "user" | "assistant" | "system" | "tool";
@@ -18,8 +29,7 @@ export type CampaignPhase = "setup" | "playing";
 export type CampaignRuleset = "narrative" | "dnd5e-2014" | "dnd5e-2024";
 export type SpeechProviderName = "piper" | "elevenlabs" | "openai";
 export type VoiceProfile = "narrator" | "deep" | "high" | "elder" | "young" | "dark" | "energetic";
-export type MusicRequestSource = "auto" | "manual";
-export type MusicRequestStatus = "pending" | "processing" | "completed" | "failed" | "cancelled";
+export type { MusicRequestSource, MusicRequestStatus } from "../../../shared/music/contracts";
 
 export type VoiceCastMember = {
   npcId: string;
@@ -77,6 +87,7 @@ export type CampaignInventoryItem = {
 };
 
 export type CampaignState = {
+  stateVersion: 1;
   system: string;
   ruleset: CampaignRuleset;
   phase: CampaignPhase;
@@ -93,7 +104,6 @@ export type CampaignState = {
   relationships: CampaignRelationship[];
   worldClock: WorldClock;
   flags: Record<string, unknown>;
-  [key: string]: unknown;
 };
 
 export type Campaign = {
@@ -144,16 +154,13 @@ export type MusicRequest = {
   indication: string | null;
   reason: string;
   replace_current: boolean;
-  context: Record<string, unknown>;
+  contract_version: number;
+  context: MusicRequestContext;
   result: Record<string, unknown>;
   error: string | null;
   processed_at: Date | null;
   created_at: Date;
   updated_at: Date;
-};
-
-export type CampaignStatePatch = Partial<Omit<CampaignState, "flags">> & {
-  flags?: Record<string, unknown>;
 };
 
 type CreateCampaignInput = {
@@ -192,41 +199,33 @@ function parseJson<T>(value: T | string): T {
 }
 
 function normalizeCampaign(row: Campaign): Campaign {
-  const state = parseJson<CampaignState>(row.state);
-
   return {
     ...row,
-    state: {
-      ...state,
-      ruleset: state.ruleset ?? "narrative",
-      phase: state.phase ?? "playing",
-      setup: state.setup ?? { premise: "", tone: "", boundaries: [] },
-      voice: state.voice ?? { enabled: false, channelId: null, provider: "piper" },
-      voiceCast: state.voiceCast ?? {},
-      relationships: state.relationships ?? [],
-      worldClock: state.worldClock ?? createInitialWorldClock(),
-    },
+    state: parseCampaignState(parseJson<unknown>(row.state), row.id) as CampaignState,
   };
 }
 
 function normalizeMessage(row: CampaignMessage): CampaignMessage {
   return {
     ...row,
-    metadata: parseJson<Record<string, unknown>>(row.metadata),
+    metadata: parsePersistentRecord(parseJson<unknown>(row.metadata), "message metadata"),
   };
 }
 
 function normalizeEvent(row: CampaignEvent): CampaignEvent {
   return {
     ...row,
-    data: parseJson<Record<string, unknown>>(row.data),
+    data: parsePersistentRecord(parseJson<unknown>(row.data), "event data"),
   };
 }
 
 function normalizeMusicRequest(row: MusicRequest): MusicRequest {
+  if (row.contract_version !== 1) throw new Error(`Unsupported music contract version: ${row.contract_version}`);
   return {
     ...row,
-    context: parseJson<Record<string, unknown>>(row.context),
+    source: parseMusicRequestSource(row.source),
+    status: parseMusicRequestStatus(row.status),
+    context: parseMusicRequestContext(parseJson<unknown>(row.context)),
     result: parseJson<Record<string, unknown>>(row.result),
   };
 }
@@ -253,6 +252,7 @@ export function createInitialCampaignState(
   voice: CampaignVoice = { enabled: false, channelId: null, provider: "piper" },
 ): CampaignState {
   return {
+    stateVersion: 1,
     system,
     ruleset,
     phase: "setup",
@@ -368,8 +368,11 @@ export async function createMusicRequest(input: {
   indication?: string;
   reason: string;
   replaceCurrent?: boolean;
-  context?: Record<string, unknown>;
+  context: MusicRequestContext;
 }) {
+  const context = parseMusicRequestContext(input.context);
+  const source = parseMusicRequestSource(input.source ?? "auto");
+  const effect = nextInteractionEffect("music_request");
   const rows = await sql<MusicRequest[]>`
     insert into music_requests (
       campaign_id,
@@ -381,23 +384,41 @@ export async function createMusicRequest(input: {
       indication,
       reason,
       replace_current,
-      context
+      context,
+      interaction_id,
+      operation_key
     ) values (
       ${input.campaignId},
       ${input.guildId},
       ${input.threadId},
       ${input.voiceChannelId},
       ${input.requestedBy ?? null},
-      ${input.source ?? 'auto'},
+      ${source},
       ${input.indication ?? null},
       ${input.reason},
       ${input.replaceCurrent ?? false},
-      ${toSqlJson(input.context ?? {})}
+      ${toSqlJson(context)},
+      ${effect.interactionId},
+      ${effect.operationKey}
     )
+    on conflict do nothing
     returning *
   `;
-
-  return normalizeMusicRequest(rows[0]);
+  if (rows[0]) return normalizeMusicRequest(rows[0]);
+  const existing = await sql<MusicRequest[]>`
+    select * from music_requests
+    where interaction_id = ${effect.interactionId} and operation_key = ${effect.operationKey}
+    limit 1
+  `;
+  if (existing[0]) return normalizeMusicRequest(existing[0]);
+  const openRequest = await sql<MusicRequest[]>`
+    select * from music_requests
+    where campaign_id = ${input.campaignId} and status in ('pending', 'processing')
+    order by created_at asc
+    limit 1
+  `;
+  if (!openRequest[0]) throw new Error("Music request conflict without persisted request");
+  return normalizeMusicRequest(openRequest[0]);
 }
 
 const npcVoiceProfiles: VoiceCastMember["profile"][] = [
@@ -440,6 +461,7 @@ export async function registerNpcVoiceAppearances(
   npcs: Array<{ npcId: string; name: string }>,
 ) {
   if (npcs.length === 0) return {};
+  const effect = nextInteractionEffect("npc_voice_appearances");
 
   return sql.begin(async (transaction) => {
     const rows = await transaction<Campaign[]>`
@@ -448,45 +470,219 @@ export async function registerNpcVoiceAppearances(
     if (!rows[0]) return {};
 
     const campaign = normalizeCampaign(rows[0]);
+    if (effect.interactionId && effect.operationKey) {
+      const duplicate = await transaction<{ id: string }[]>`
+        select id from interaction_effects
+        where interaction_id = ${effect.interactionId} and operation_key = ${effect.operationKey}
+        limit 1
+      `;
+      if (duplicate[0]) return campaign.state.voiceCast;
+    }
     const voiceCast = updateVoiceCast(campaign.state.voiceCast, npcs);
+    const state = parseCampaignState({ ...campaign.state, voiceCast }, campaignId);
 
     await transaction`
       update campaigns
-      set state = jsonb_set(state, '{voiceCast}', ${toSqlJson(voiceCast)}, true)
+      set state = ${toSqlJson(state)}
       where id = ${campaignId}
     `;
+    if (effect.interactionId && effect.operationKey) {
+      await transaction`
+        insert into interaction_effects (interaction_id, operation_key, effect_type, data)
+        values (
+          ${effect.interactionId}, ${effect.operationKey}, 'npc_voice_appearances',
+          ${toSqlJson({ npcIds: npcs.map((npc) => npc.npcId) })}
+        )
+      `;
+    }
     return voiceCast;
   });
 }
 
-export async function patchCampaignState(campaignId: string, patch: CampaignStatePatch) {
-  const rows = await sql<Campaign[]>`
-    update campaigns
-    set state = state || ${toSqlJson(patch)} || jsonb_build_object(
-      'flags',
-      coalesce(state -> 'flags', '{}'::jsonb) || coalesce(${toSqlJson(patch.flags ?? {})}, '{}'::jsonb)
-    )
-    where id = ${campaignId}
-    returning *
-  `;
+async function mutateCampaignState(input: {
+  campaignId: string;
+  actorId?: string;
+  eventType: string;
+  reason: string;
+  eventData?: Record<string, unknown>;
+  mutate: (state: CampaignState) => CampaignState;
+}) {
+  const effect = nextInteractionEffect(input.eventType);
+  return sql.begin(async (transaction) => {
+    const rows = await transaction<Campaign[]>`
+      select * from campaigns where id = ${input.campaignId} for update
+    `;
+    if (!rows[0]) return null;
+    const campaign = normalizeCampaign(rows[0]);
+    if (effect.interactionId && effect.operationKey) {
+      const existingEffect = await transaction<{ id: string }[]>`
+        select id from interaction_effects
+        where interaction_id = ${effect.interactionId} and operation_key = ${effect.operationKey}
+        limit 1
+      `;
+      if (existingEffect[0]) return campaign;
+    }
+    const state = parseCampaignState(input.mutate(campaign.state), input.campaignId);
+    const updated = await transaction<Campaign[]>`
+      update campaigns set state = ${toSqlJson(state)} where id = ${input.campaignId} returning *
+    `;
+    await transaction`
+      insert into events (
+        campaign_id, type, actor_id, data, importance, interaction_id, operation_key
+      )
+      values (
+        ${input.campaignId}, ${input.eventType}, ${input.actorId ?? null},
+        ${toSqlJson({ reason: input.reason, ...(input.eventData ?? {}) })}, 2,
+        ${effect.interactionId}, ${effect.operationKey}
+      )
+    `;
+    if (effect.interactionId && effect.operationKey) {
+      await transaction`
+        insert into interaction_effects (interaction_id, operation_key, effect_type, data)
+        values (
+          ${effect.interactionId}, ${effect.operationKey}, ${input.eventType},
+          ${toSqlJson({ campaignId: input.campaignId, reason: input.reason })}
+        )
+      `;
+    }
+    return normalizeCampaign(updated[0]);
+  });
+}
 
-  return rows[0] ? normalizeCampaign(rows[0]) : null;
+export function updateCampaignNarrative(input: {
+  campaignId: string;
+  actorId?: string;
+  summary?: string;
+  currentScene?: string;
+  phase?: CampaignPhase;
+  reason: string;
+}) {
+  return mutateCampaignState({
+    ...input,
+    eventType: "narrative_state_changed",
+    eventData: { summaryChanged: input.summary !== undefined, sceneChanged: input.currentScene !== undefined },
+    mutate: (state) => ({
+      ...state,
+      ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      ...(input.currentScene !== undefined ? { currentScene: input.currentScene } : {}),
+      ...(input.phase !== undefined ? { phase: input.phase } : {}),
+    }),
+  });
+}
+
+export function upsertCampaignNpc(input: {
+  campaignId: string;
+  actorId?: string;
+  npc: CampaignNpc;
+  reason: string;
+}) {
+  return mutateCampaignState({
+    ...input,
+    eventType: "npc_upserted",
+    eventData: { npcId: input.npc.id },
+    mutate: (state) => {
+      const existing = state.npcs.find((npc) => npc.id === input.npc.id);
+      return {
+        ...state,
+        npcs: [...state.npcs.filter((npc) => npc.id !== input.npc.id), { ...existing, ...input.npc }],
+      };
+    },
+  });
+}
+
+export function upsertCampaignLocation(input: {
+  campaignId: string;
+  actorId?: string;
+  location: CampaignLocation;
+  reason: string;
+}) {
+  return mutateCampaignState({
+    ...input,
+    eventType: "location_upserted",
+    eventData: { locationId: input.location.id },
+    mutate: (state) => {
+      const existing = state.locations.find((location) => location.id === input.location.id);
+      return {
+        ...state,
+        locations: [
+          ...state.locations.filter((location) => location.id !== input.location.id),
+          { ...existing, ...input.location },
+        ],
+      };
+    },
+  });
+}
+
+export function upsertCampaignQuest(input: {
+  campaignId: string;
+  actorId?: string;
+  quest: CampaignQuest;
+  reason: string;
+}) {
+  return mutateCampaignState({
+    ...input,
+    eventType: "quest_upserted",
+    eventData: { questId: input.quest.id, status: input.quest.status },
+    mutate: (state) => {
+      const existing = state.quests.find((quest) => quest.id === input.quest.id);
+      return {
+        ...state,
+        quests: [...state.quests.filter((quest) => quest.id !== input.quest.id), { ...existing, ...input.quest }],
+      };
+    },
+  });
+}
+
+export function changeCampaignInventory(input: {
+  campaignId: string;
+  actorId?: string;
+  item: Omit<CampaignInventoryItem, "quantity">;
+  quantityDelta: number;
+  reason: string;
+}) {
+  if (!Number.isSafeInteger(input.quantityDelta) || input.quantityDelta === 0) {
+    throw new Error("A alteração de quantidade deve ser um inteiro diferente de zero.");
+  }
+
+  return mutateCampaignState({
+    ...input,
+    eventType: "inventory_changed",
+    eventData: { itemId: input.item.id, quantityDelta: input.quantityDelta },
+    mutate: (state) => {
+      const existing = state.inventory.find((item) => item.id === input.item.id);
+      const quantity = (existing?.quantity ?? 0) + input.quantityDelta;
+      if (quantity < 0) throw new Error("O inventário não possui quantidade suficiente.");
+      const inventory = state.inventory.filter((item) => item.id !== input.item.id);
+      if (quantity > 0) inventory.push({ ...input.item, quantity });
+      return { ...state, inventory };
+    },
+  });
+}
+
+export function updateCampaignMusicFlags(campaignId: string, music: Record<string, unknown>) {
+  return mutateCampaignState({
+    campaignId,
+    eventType: "music_state_changed",
+    reason: "Estado do diretor musical atualizado.",
+    mutate: (state) => ({ ...state, flags: { ...state.flags, music } }),
+  });
 }
 
 export async function patchCampaignSetup(campaignId: string, patch: Partial<CampaignSetup>) {
-  const rows = await sql<Campaign[]>`
-    update campaigns
-    set state = jsonb_set(
-      state,
-      '{setup}',
-      coalesce(state -> 'setup', '{}'::jsonb) || ${toSqlJson(patch)},
-      true
-    )
-    where id = ${campaignId} and state ->> 'phase' = 'setup'
-    returning *
-  `;
-
-  return rows[0] ? normalizeCampaign(rows[0]) : null;
+  return sql.begin(async (transaction) => {
+    const rows = await transaction<Campaign[]>`select * from campaigns where id = ${campaignId} for update`;
+    if (!rows[0]) return null;
+    const campaign = normalizeCampaign(rows[0]);
+    if (campaign.state.phase !== "setup") return null;
+    const state = parseCampaignState({
+      ...campaign.state,
+      setup: { ...campaign.state.setup, ...patch },
+    }, campaignId);
+    const updated = await transaction<Campaign[]>`
+      update campaigns set state = ${toSqlJson(state)} where id = ${campaignId} returning *
+    `;
+    return normalizeCampaign(updated[0]);
+  });
 }
 
 export async function adjustCampaignRelationship(input: {
@@ -497,6 +693,7 @@ export async function adjustCampaignRelationship(input: {
   deltas: RelationshipDeltas;
   reason: string;
 }) {
+  const effect = nextInteractionEffect("relationship_changed");
   return sql.begin(async (transaction) => {
     const rows = await transaction<Campaign[]>`
       select * from campaigns where id = ${input.campaignId} for update
@@ -504,19 +701,36 @@ export async function adjustCampaignRelationship(input: {
     if (!rows[0]) return null;
 
     const campaign = normalizeCampaign(rows[0]);
+    if (effect.interactionId && effect.operationKey) {
+      const duplicate = await transaction<{ id: string }[]>`
+        select id from interaction_effects
+        where interaction_id = ${effect.interactionId} and operation_key = ${effect.operationKey}
+        limit 1
+      `;
+      if (duplicate[0]) {
+        const id = `${input.source.type}:${input.source.id}->${input.target.type}:${input.target.id}`;
+        return campaign.state.relationships.find((relationship) => relationship.id === id) ?? null;
+      }
+    }
     const result = adjustRelationships(campaign.state.relationships, {
       source: input.source,
       target: input.target,
       deltas: input.deltas,
     });
+    const state = parseCampaignState({
+      ...campaign.state,
+      relationships: result.relationships,
+    }, input.campaignId);
 
     await transaction`
       update campaigns
-      set state = jsonb_set(state, '{relationships}', ${toSqlJson(result.relationships)}, true)
+      set state = ${toSqlJson(state)}
       where id = ${input.campaignId}
     `;
     await transaction`
-      insert into events (campaign_id, type, actor_id, data, importance)
+      insert into events (
+        campaign_id, type, actor_id, data, importance, interaction_id, operation_key
+      )
       values (
         ${input.campaignId},
         'relationship_changed',
@@ -528,9 +742,20 @@ export async function adjustCampaignRelationship(input: {
           deltas: input.deltas,
           reason: input.reason,
         })},
-        3
+        3,
+        ${effect.interactionId},
+        ${effect.operationKey}
       )
     `;
+    if (effect.interactionId && effect.operationKey) {
+      await transaction`
+        insert into interaction_effects (interaction_id, operation_key, effect_type, data)
+        values (
+          ${effect.interactionId}, ${effect.operationKey}, 'relationship_changed',
+          ${toSqlJson({ relationshipId: result.relationship.id })}
+        )
+      `;
+    }
 
     return result.relationship;
   });
@@ -542,6 +767,7 @@ export async function advanceCampaignWorldClock(input: {
   duration: WorldDuration;
   reason: string;
 }) {
+  const effect = nextInteractionEffect("world_clock_advanced");
   return sql.begin(async (transaction) => {
     const rows = await transaction<Campaign[]>`
       select * from campaigns where id = ${input.campaignId} for update
@@ -549,16 +775,29 @@ export async function advanceCampaignWorldClock(input: {
     if (!rows[0]) return null;
 
     const campaign = normalizeCampaign(rows[0]);
+    if (effect.interactionId && effect.operationKey) {
+      const duplicate = await transaction<{ id: string }[]>`
+        select id from interaction_effects
+        where interaction_id = ${effect.interactionId} and operation_key = ${effect.operationKey}
+        limit 1
+      `;
+      if (duplicate[0]) {
+        return { before: campaign.state.worldClock, after: campaign.state.worldClock };
+      }
+    }
     const before = campaign.state.worldClock;
     const after = advanceWorldClock(before, input.duration);
+    const state = parseCampaignState({ ...campaign.state, worldClock: after }, input.campaignId);
 
     await transaction`
       update campaigns
-      set state = jsonb_set(state, '{worldClock}', ${toSqlJson(after)}, true)
+      set state = ${toSqlJson(state)}
       where id = ${input.campaignId}
     `;
     await transaction`
-      insert into events (campaign_id, type, actor_id, data, importance)
+      insert into events (
+        campaign_id, type, actor_id, data, importance, interaction_id, operation_key
+      )
       values (
         ${input.campaignId},
         'world_clock_advanced',
@@ -569,9 +808,20 @@ export async function advanceCampaignWorldClock(input: {
           before: toWorldClockEventSnapshot(before),
           after: toWorldClockEventSnapshot(after),
         })},
-        2
+        2,
+        ${effect.interactionId},
+        ${effect.operationKey}
       )
     `;
+    if (effect.interactionId && effect.operationKey) {
+      await transaction`
+        insert into interaction_effects (interaction_id, operation_key, effect_type, data)
+        values (
+          ${effect.interactionId}, ${effect.operationKey}, 'world_clock_advanced',
+          ${toSqlJson({ before: toWorldClockEventSnapshot(before), after: toWorldClockEventSnapshot(after) })}
+        )
+      `;
+    }
 
     return { before, after };
   });
@@ -580,37 +830,19 @@ export async function advanceCampaignWorldClock(input: {
 export async function upsertPlayerCharacter(campaignId: string, character: CampaignCharacter) {
   if (!character.playerId) throw new Error("Player character requires playerId");
 
-  const rows = await sql<Campaign[]>`
-    update campaigns
-    set state = jsonb_set(
-      state,
-      '{characters}',
-      coalesce(
-        (
-          select jsonb_agg(existing_character)
-          from jsonb_array_elements(coalesce(state -> 'characters', '[]'::jsonb)) as existing_character
-          where existing_character ->> 'playerId' is distinct from ${character.playerId}
-        ),
-        '[]'::jsonb
-      ) || jsonb_build_array(${toSqlJson(character)}),
-      true
-    )
-    where id = ${campaignId} and state ->> 'phase' = 'setup'
-    returning *
-  `;
-
-  return rows[0] ? normalizeCampaign(rows[0]) : null;
-}
-
-export async function replaceCampaignState(campaignId: string, state: CampaignState) {
-  const rows = await sql<Campaign[]>`
-    update campaigns
-    set state = ${toSqlJson(state)}
-    where id = ${campaignId}
-    returning *
-  `;
-
-  return rows[0] ? normalizeCampaign(rows[0]) : null;
+  return sql.begin(async (transaction) => {
+    const rows = await transaction<Campaign[]>`select * from campaigns where id = ${campaignId} for update`;
+    if (!rows[0]) return null;
+    const campaign = normalizeCampaign(rows[0]);
+    if (campaign.state.phase !== "setup") return null;
+    const characters = campaign.state.characters.filter((existing) => existing.playerId !== character.playerId);
+    characters.push(character);
+    const state = parseCampaignState({ ...campaign.state, characters }, campaignId);
+    const updated = await transaction<Campaign[]>`
+      update campaigns set state = ${toSqlJson(state)} where id = ${campaignId} returning *
+    `;
+    return normalizeCampaign(updated[0]);
+  });
 }
 
 export async function closeCampaign(campaignId: string) {
@@ -625,6 +857,8 @@ export async function closeCampaign(campaignId: string) {
 }
 
 export async function saveCampaignMessage(input: SaveMessageInput) {
+  const effect = nextInteractionEffect(`message_${input.role}`);
+  const metadata = parsePersistentRecord(input.metadata ?? {}, "message metadata");
   const rows = await sql<(CampaignMessage & { inserted: boolean })[]>`
     insert into messages (
       campaign_id,
@@ -633,7 +867,9 @@ export async function saveCampaignMessage(input: SaveMessageInput) {
       author_name,
       role,
       content,
-      metadata
+      metadata,
+      interaction_id,
+      operation_key
     ) values (
       ${input.campaignId},
       ${input.discordMessageId ?? null},
@@ -641,9 +877,11 @@ export async function saveCampaignMessage(input: SaveMessageInput) {
       ${input.authorName ?? null},
       ${input.role},
       ${input.content},
-      ${toSqlJson(input.metadata ?? {})}
+      ${toSqlJson(metadata)},
+      ${effect.interactionId},
+      ${effect.operationKey}
     )
-    on conflict (discord_message_id) where discord_message_id is not null do nothing
+    on conflict do nothing
     returning *, true as inserted
   `;
 
@@ -651,9 +889,15 @@ export async function saveCampaignMessage(input: SaveMessageInput) {
     return { ...normalizeMessage(rows[0]), inserted: true };
   }
 
-  const existingRows = await sql<CampaignMessage[]>`
-    select * from messages where discord_message_id = ${input.discordMessageId ?? null} limit 1
-  `;
+  const existingRows = input.discordMessageId
+    ? await sql<CampaignMessage[]>`
+        select * from messages where discord_message_id = ${input.discordMessageId} limit 1
+      `
+    : await sql<CampaignMessage[]>`
+        select * from messages
+        where interaction_id = ${effect.interactionId} and operation_key = ${effect.operationKey}
+        limit 1
+      `;
   const existing = existingRows[0];
   return existing ? { ...normalizeMessage(existing), inserted: false } : null;
 }
@@ -675,29 +919,56 @@ export async function saveDiceRoll(input: {
   expression: string;
   result: Record<string, unknown>;
 }) {
-  const rows = await sql<{ id: string }[]>`
-    insert into dice_rolls (campaign_id, author_id, expression, result)
-    values (${input.campaignId}, ${input.authorId ?? null}, ${input.expression}, ${toSqlJson(input.result)})
-    returning id
+  const effect = nextInteractionEffect("dice_roll");
+  const result = parsePersistentRecord(input.result, "dice result");
+  const rows = await sql<{ id: string; result: Record<string, unknown> | string }[]>`
+    insert into dice_rolls (
+      campaign_id, author_id, expression, result, interaction_id, operation_key
+    )
+    values (
+      ${input.campaignId}, ${input.authorId ?? null}, ${input.expression}, ${toSqlJson(result)},
+      ${effect.interactionId}, ${effect.operationKey}
+    )
+    on conflict do nothing
+    returning id, result
   `;
-
-  return rows[0];
+  if (rows[0]) return { ...rows[0], result: parseJson(rows[0].result) };
+  const existing = await sql<{ id: string; result: Record<string, unknown> | string }[]>`
+    select id, result from dice_rolls
+    where interaction_id = ${effect.interactionId} and operation_key = ${effect.operationKey}
+    limit 1
+  `;
+  if (!existing[0]) throw new Error("Dice roll conflict without persisted roll");
+  return { ...existing[0], result: parseJson(existing[0].result) };
 }
 
 export async function saveCampaignEvent(input: SaveEventInput) {
+  const effect = nextInteractionEffect(`event_${input.type}`);
+  const data = parsePersistentRecord(input.data ?? {}, "event data");
   const rows = await sql<CampaignEvent[]>`
-    insert into events (campaign_id, type, actor_id, data, importance)
+    insert into events (
+      campaign_id, type, actor_id, data, importance, interaction_id, operation_key
+    )
     values (
       ${input.campaignId},
       ${input.type},
       ${input.actorId ?? null},
-      ${toSqlJson(input.data ?? {})},
-      ${input.importance ?? 1}
+      ${toSqlJson(data)},
+      ${input.importance ?? 1},
+      ${effect.interactionId},
+      ${effect.operationKey}
     )
+    on conflict do nothing
     returning *
   `;
-
-  return normalizeEvent(rows[0]);
+  if (rows[0]) return normalizeEvent(rows[0]);
+  const existing = await sql<CampaignEvent[]>`
+    select * from events
+    where interaction_id = ${effect.interactionId} and operation_key = ${effect.operationKey}
+    limit 1
+  `;
+  if (!existing[0]) throw new Error("Event conflict without persisted event");
+  return normalizeEvent(existing[0]);
 }
 
 export async function getRecentCampaignEvents(campaignId: string, limit = 20) {

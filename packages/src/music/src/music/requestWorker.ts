@@ -1,4 +1,6 @@
 import type { Client } from "discord.js";
+import { MUSIC_CONTRACT_VERSION, parseMusicRequestResult } from "../../../shared/music/contracts";
+import { createLogger, runWithLogContext } from "../../../shared/logging/logger";
 import { env } from "../config/env";
 import {
   claimNextMusicRequest,
@@ -14,6 +16,7 @@ import { chooseAmbientTrack } from "./youtube";
 
 let timer: ReturnType<typeof setInterval> | undefined;
 let running = false;
+const logger = createLogger("music");
 
 function readRecord(value: unknown) {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -37,6 +40,7 @@ async function announceSelection(client: Client<true>, request: MusicRequest, co
 }
 
 async function processRequest(client: Client<true>, request: MusicRequest) {
+  const startedAt = Date.now();
   const campaign = await getCampaignById(request.campaign_id);
   if (!campaign || campaign.status !== "active") {
     await failMusicRequest(request.id, "Campaign is not active anymore");
@@ -68,7 +72,8 @@ async function processRequest(client: Client<true>, request: MusicRequest) {
       mood: plan.mood,
     }, { replaceCurrent: request.replace_current });
 
-    await completeMusicRequest(request.id, { plan, track });
+    const result = parseMusicRequestResult({ version: MUSIC_CONTRACT_VERSION, plan, track });
+    await completeMusicRequest(request.id, result);
     await updateMusicFlags(campaign.id, currentFlags, {
       pendingRequestId: null,
       lastAppliedAt: new Date().toISOString(),
@@ -82,6 +87,7 @@ async function processRequest(client: Client<true>, request: MusicRequest) {
       request,
       `Ambiente instrumental: **${plan.sceneType}**\nClima: ${plan.mood}\nTocando: ${track.title}\n${track.webpageUrl}`,
     );
+    logger.info("music_request_completed", { duration_ms: Date.now() - startedAt, track: track.title });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown music worker error";
     await failMusicRequest(request.id, message);
@@ -90,6 +96,7 @@ async function processRequest(client: Client<true>, request: MusicRequest) {
       lastErrorAt: new Date().toISOString(),
       lastError: message,
     });
+    logger.error("music_request_failed", error, { duration_ms: Date.now() - startedAt });
   }
 }
 
@@ -99,7 +106,10 @@ async function poll(client: Client<true>) {
   try {
     const request = await claimNextMusicRequest();
     if (!request) return;
-    await processRequest(client, request);
+    await runWithLogContext({
+      campaign_id: request.campaign_id,
+      operation_key: request.id,
+    }, () => processRequest(client, request));
   } finally {
     running = false;
   }

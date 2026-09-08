@@ -1,4 +1,15 @@
-import { sql } from "../config/database";
+import { lockSql, sql } from "../config/database";
+import {
+  parseMusicRequestContext,
+  parseMusicRequestResult,
+  parseMusicRequestSource,
+  parseMusicRequestStatus,
+  type MusicRequestContext,
+  type MusicRequestResult,
+  type MusicRequestSource,
+  type MusicRequestStatus,
+} from "../../../shared/music/contracts";
+import { parseCampaignState } from "../../../rpg/src/db/campaignStateSchema";
 
 export type Campaign = {
   id: string;
@@ -28,13 +39,14 @@ export type MusicRequest = {
   thread_id: string;
   voice_channel_id: string;
   requested_by: string | null;
-  source: "auto" | "manual";
-  status: "pending" | "processing" | "completed" | "failed" | "cancelled";
+  source: MusicRequestSource;
+  status: MusicRequestStatus;
   indication: string | null;
   reason: string;
   replace_current: boolean;
-  context: Record<string, unknown>;
-  result: Record<string, unknown>;
+  contract_version: number;
+  context: MusicRequestContext;
+  result: MusicRequestResult | Record<string, never>;
   error: string | null;
   processed_at: Date | null;
   created_at: Date;
@@ -50,10 +62,15 @@ function normalizeCampaign(row: Campaign): Campaign {
 }
 
 function normalizeMusicRequest(row: MusicRequest): MusicRequest {
+  if (row.contract_version !== 1) throw new Error(`Unsupported music contract version: ${row.contract_version}`);
+  const status = parseMusicRequestStatus(row.status);
+  const rawResult = parseJson<unknown>(row.result);
   return {
     ...row,
-    context: parseJson<Record<string, unknown>>(row.context),
-    result: parseJson<Record<string, unknown>>(row.result),
+    source: parseMusicRequestSource(row.source),
+    status,
+    context: parseMusicRequestContext(parseJson<unknown>(row.context)),
+    result: status === "completed" ? parseMusicRequestResult(rawResult) : {},
   };
 }
 
@@ -83,10 +100,11 @@ export async function claimNextMusicRequest() {
   });
 }
 
-export async function completeMusicRequest(requestId: string, result: Record<string, unknown>) {
+export async function completeMusicRequest(requestId: string, result: MusicRequestResult) {
+  const validatedResult = parseMusicRequestResult(result);
   const rows = await sql<MusicRequest[]>`
     update music_requests
-    set status = 'completed', result = ${toSqlJson(result)}, error = null, processed_at = coalesce(processed_at, now())
+    set status = 'completed', result = ${toSqlJson(validatedResult)}, error = null, processed_at = coalesce(processed_at, now())
     where id = ${requestId}
     returning *
   `;
@@ -114,12 +132,37 @@ export async function getCampaignById(campaignId: string) {
 }
 
 export async function setCampaignMusicFlags(campaignId: string, flags: Record<string, unknown>) {
-  await sql`
-    update campaigns
-    set state = state || jsonb_build_object(
-      'flags',
-      coalesce(state -> 'flags', '{}'::jsonb) || jsonb_build_object('music', ${toSqlJson(flags)})
-    )
-    where id = ${campaignId}
-  `;
+  const connection = await lockSql.reserve();
+  const lockKey = `rpg:campaign:${campaignId}`;
+  let locked = false;
+  try {
+    await connection`select pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
+    locked = true;
+    await connection.unsafe("begin");
+    try {
+      const rows = await connection<Array<{ id: string; state: unknown }>>`
+        select id, state from campaigns where id = ${campaignId} for update
+      `;
+      if (rows[0]) {
+        const state = parseCampaignState(rows[0].state, campaignId);
+        const nextState = parseCampaignState({
+          ...state,
+          flags: { ...state.flags, music: flags },
+        }, campaignId);
+        await connection`
+          update campaigns set state = ${toSqlJson(nextState)} where id = ${campaignId}
+        `;
+      }
+      await connection.unsafe("commit");
+    } catch (error) {
+      await connection.unsafe("rollback");
+      throw error;
+    }
+  } finally {
+    try {
+      if (locked) await connection`select pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
+    } finally {
+      connection.release();
+    }
+  }
 }
